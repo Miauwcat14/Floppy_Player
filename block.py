@@ -37,7 +37,6 @@ class Block:
         self.dragging = False
         self.hovered = False
         self.offset = [0, 0]
-        self.child = None
         
         # Load assets
         self.sprite = pygame.image.load("assets/block.png").convert_alpha()
@@ -131,32 +130,22 @@ class Block:
         display.blit(self.parts[11], (x + floor_w, bottom_y))
     
     def draw_oval_block(self, display, x, y):
-        _, content_h, slot_rects, display_texts, (w, h) = self.compute_layout()
+        # O-blocks should match the exact shape of input slots (rounded rectangles)
+        padding_x = 6
+        padding_y = 2
+        txt_w, txt_h = self.font.font.size(self.text.split('[')[0].strip())
+        sw = max(16, txt_w + padding_x * 2)
+        sh = max(txt_h + padding_y * 2, 12)
+        
+        # Use the same styling as slots
+        rect = pygame.Rect(x, y, sw, sh)
+        pygame.draw.rect(display, self.color, rect, border_radius=4)
+        pygame.draw.rect(display, (0, 0, 0), rect, width=1, border_radius=4)
 
-        radius = h // 2
-        rect = pygame.Rect(x, y, w, h)
-
-        # body
-        pygame.draw.ellipse(display, self.color, rect)
-
-        # outline
-        pygame.draw.ellipse(display, (0, 0, 0), rect, 1)
-
-        # render inline content (same logic as slots)
-        cursor_x = x + radius // 2
-        cursor_y = y + (h - content_h) // 2
-
-        slot_index_counter = 0
-        for part in self.template_parts:
-            if part[0] == "text":
-                self.font.render(display, part[1], (0, 0, 0), 12, (cursor_x, cursor_y))
-                cursor_x += self.font.font.size(part[1])[0]
-            else:
-                self._render_inline_slot(
-                    display, part, cursor_x, cursor_y, slot_index_counter
-                )
-                cursor_x += slot_rects[slot_index_counter].w + 4
-                slot_index_counter += 1
+        # Render the text centered
+        txt_x = x + (sw - txt_w) // 2
+        txt_y = y + (sh - txt_h) // 2
+        self.font.render(display, self.text.split('[')[0].strip(), (0, 0, 0), 12, (txt_x, txt_y))
 
     def _parse_text(self, text):
         """
@@ -269,6 +258,15 @@ class Block:
         return total_content_w, content_h, slot_rects, display_texts, (int(total_w), int(total_h))
 
     def get_size(self):
+        if self.btype == "o":
+            # For O-blocks, use the same sizing as slots
+            padding_x = 6
+            padding_y = 2
+            txt_w, txt_h = self.font.font.size(self.text.split('[')[0].strip())
+            sw = max(16, txt_w + padding_x * 2)
+            sh = max(txt_h + padding_y * 2, 12)
+            return (sw, sh)
+        
         _, content_h, slot_rects, _, (total_w, _) = self.compute_layout()
         self.slot_rects = slot_rects
         
@@ -333,17 +331,6 @@ class Block:
             self.child.pos[1] = self.pos[1] + self.get_size()[1] - 1
             self.child.update(mouse_pos, blocks) # Recurse
     
-    def try_snap_into_slot(self, blocks):
-        if self.btype != "o":
-            return
-
-        for other in blocks:
-            idx = other.input_at(self.pos)
-            if idx is not None:
-                other.slots[idx]["value"] = self
-                self.parent = other
-                return
-
     def try_snap(self, blocks):
         self.dragging = False
 
@@ -351,11 +338,16 @@ class Block:
         if self.btype == "o":
             for other in blocks:
                 if other == self: continue
-                idx = other.input_at(self.pos)
+                # Use the center of the O-block for better collision detection
+                w, h = self.get_size()
+                center_pos = (self.pos[0] + w // 2, self.pos[1] + h // 2)
+                idx = other.input_at(center_pos)
                 if idx is not None:
-                    other.slots[idx]["value"] = self
-                    self.parent = other
-                    return True # Signal success to remove from main list
+                    # Check if slot is empty or already contains a block
+                    if not isinstance(other.slots[idx]["value"], Block):
+                        other.slots[idx]["value"] = self
+                        self.parent = other
+                        return True # Signal success to remove from main list
             return False
 
         for other in blocks:
@@ -398,14 +390,31 @@ class Block:
         return curr
 
     def input_at(self, pos):
-        """Returns the index of the slot at the given global position."""
-        # Convert global mouse pos to local block-space
-        local_x = pos[0] - self.pos[0]
-        local_y = pos[1] - self.pos[1]
+        # We re-run the layout math to find where the slots ARE currently on the screen
+        total_content_w, content_h, slot_rects, display_texts, (w, h) = self.compute_layout()
         
-        for i, rect in enumerate(self.slot_rects):
-            if rect.collidepoint(local_x, local_y):
-                return i
+        # This starting point must match your cursor_x/y in _stamp_at exactly
+        start_x = self.pos[0] + 15 
+        start_y = self.pos[1] + 3
+        
+        slot_index = 0
+        current_x = start_x
+
+        for part in self.template_parts:
+            if part[0] == "text":
+                tw, _ = self.font.font.size(part[1])
+                current_x += tw
+            else:
+                # Get the dimensions for this specific slot
+                rect_dim = slot_rects[slot_index]
+                # Construct a temporary global rect for collision checking
+                global_slot_rect = pygame.Rect(current_x, start_y, rect_dim.width, rect_dim.height)
+                
+                if global_slot_rect.collidepoint(pos):
+                    return slot_index
+                
+                current_x += rect_dim.width + 2
+                slot_index += 1
         return None
 
     def start_edit_input(self, slot_index):
@@ -571,47 +580,50 @@ class Block:
                     if now - self._caret_blink_ts >= 500:
                         self._caret_blink_ts = now
                     show_caret = ((now // 500) % 2) == 0
+                    should_render_slot = True
                 else:
                     val = part[1]["value"]
-                    to_disp = True
                     if isinstance(val, Block):
-                        # Instead of drawing a rect, tell the nested block to draw itself here
+                        # When slot contains a Block, don't render the slot rectangle
+                        # Just render the nested block and move on
                         val.stamp_at(display, (cursor_x, cursor_y))
                         cursor_x += val.get_size()[0] + 2
-                        to_disp = False
-                    if to_disp:
-                        display_text = str(val) if val is not None else ""
-                    else:
+                        should_render_slot = False
                         display_text = ""
-                    show_caret = False
+                        show_caret = False
+                    else:
+                        display_text = str(val) if val is not None else ""
+                        should_render_slot = True
+                        show_caret = False
 
-                measure_text = display_text if display_text != "" else "0"
-                txt_w, txt_h = self.font.font.size(measure_text)
-                padding_x = 6
-                padding_y = 2
-                sw = max(16, txt_w + padding_x * 2)
-                sh = max(txt_h + padding_y * 2, 12)
-                slot_x = cursor_x
-                slot_y = cursor_y
-                slot_rect = pygame.Rect(slot_x, slot_y, sw, sh)
-                pygame.draw.rect(display, self.slot_fill, slot_rect, border_radius=4)
-                pygame.draw.rect(display, self.slot_border, slot_rect, width=1, border_radius=4)
+                if should_render_slot:
+                    measure_text = display_text if display_text != "" else "0"
+                    txt_w, txt_h = self.font.font.size(measure_text)
+                    padding_x = 6
+                    padding_y = 2
+                    sw = max(16, txt_w + padding_x * 2)
+                    sh = max(txt_h + padding_y * 2, 12)
+                    slot_x = cursor_x
+                    slot_y = cursor_y
+                    slot_rect = pygame.Rect(slot_x, slot_y, sw, sh)
+                    pygame.draw.rect(display, self.slot_fill, slot_rect, border_radius=4)
+                    pygame.draw.rect(display, self.slot_border, slot_rect, width=1, border_radius=4)
 
-                # draw text centered
-                s_w2, s_h2 = self.font.font.size(display_text if display_text != "" else " ")
-                txt_x = slot_x + (sw - s_w2) // 2
-                txt_y = slot_y + (sh - s_h2) // 2
-                self.font.render(display, display_text, (0,0,0), 12, (txt_x, txt_y))
+                    # draw text centered
+                    s_w2, s_h2 = self.font.font.size(display_text if display_text != "" else " ")
+                    txt_x = slot_x + (sw - s_w2) // 2
+                    txt_y = slot_y + (sh - s_h2) // 2
+                    self.font.render(display, display_text, (0,0,0), 12, (txt_x, txt_y))
 
-                # caret when editing
-                if self.editing_index == slot_index_counter and show_caret:
-                    caret_x = txt_x + s_w2 + 1
-                    caret_y1 = txt_y
-                    caret_y2 = txt_y + s_h2
-                    pygame.draw.line(display, (0,0,0), (caret_x, caret_y1), (caret_x, caret_y2), 1)
+                    # caret when editing
+                    if self.editing_index == slot_index_counter and show_caret:
+                        caret_x = txt_x + s_w2 + 1
+                        caret_y1 = txt_y
+                        caret_y2 = txt_y + s_h2
+                        pygame.draw.line(display, (0,0,0), (caret_x, caret_y1), (caret_x, caret_y2), 1)
 
-                cursor_x += sw + 2
-                slot_index_counter += 1
+                    cursor_x += sw + 2
+                    slot_index_counter += 1
 
         # 2. WRAPPER RENDERING (The C-shape)
         if self.btype == "l":
