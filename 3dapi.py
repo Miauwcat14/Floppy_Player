@@ -4,11 +4,11 @@ from numba import njit, prange
 import sys
 import os
 import math
-import pyassimp
+import trimesh
 
-# --- Optimized Rasterizer (Unchanged) ---
+# --- Optimized Rasterizer ---
 @njit(fastmath=True, cache=True)
-def draw_textured_triangle(px_array, z_buffer, v1, v2, v3, t1, t2, t3, texture, tex_alpha, sw, sh, intensity):
+def draw_textured_triangle(px_array, z_buffer, v1, v2, v3, t1, t2, t3, texture, tex_alpha, sw, sh, intensity, wireframe_mode=False):
     min_x = int(max(0, math.floor(min(v1[0], v2[0], v3[0]))))
     max_x = int(min(sw - 1, math.ceil(max(v1[0], v2[0], v3[0]))))
     min_y = int(max(0, math.floor(min(v1[1], v2[1], v3[1]))))
@@ -33,16 +33,28 @@ def draw_textured_triangle(px_array, z_buffer, v1, v2, v3, t1, t2, t3, texture, 
             if w1 >= 0.0 and w2 >= 0.0 and w3 >= 0.0:
                 iz = w1 * v1[2] + w2 * v2[2] + w3 * v3[2]
                 if iz > z_buffer[x, y]:
-                    tx, ty = int((w1 * t1[0] + w2 * t2[0] + w3 * t3[0]) * tw), int((w1 * t1[1] + w2 * t2[1] + w3 * t3[1]) * th)
-                    tx, ty = tx % (tw + 1), ty % (th + 1)
+                    # Wireframe mode: draw edges where barycentric weights are near 0
+                    if wireframe_mode:
+                        edge_threshold = 0.05
+                        if (w1 < edge_threshold or w2 < edge_threshold or w3 < edge_threshold):
+                            final_intensity = 2.0  # Bright wireframe
+                        else:
+                            continue  # Skip interior pixels
+                    else:
+                        final_intensity = intensity
+                    
+                    tx, ty = float(w1 * t1[0] + w2 * t2[0] + w3 * t3[0]) * tw, float(w1 * t1[1] + w2 * t2[1] + w3 * t3[1]) * th
+                    tx, ty = int(tx) % (tw + 1), int(ty) % (th + 1)
+                    
+                    # Alpha transparency check (strict for normal mode)
                     if tex_alpha[tx, ty] > 128:
                         z_buffer[x, y] = iz
-                        px_array[x, y, 0] = np.uint8(texture[tx, ty, 0] * min(1.0, intensity))
-                        px_array[x, y, 1] = np.uint8(texture[tx, ty, 1] * min(1.0, intensity))
-                        px_array[x, y, 2] = np.uint8(texture[tx, ty, 2] * min(1.0, intensity))
+                        px_array[x, y, 0] = np.uint8(texture[tx, ty, 0] * min(1.0, final_intensity))
+                        px_array[x, y, 1] = np.uint8(texture[tx, ty, 1] * min(1.0, final_intensity))
+                        px_array[x, y, 2] = np.uint8(texture[tx, ty, 2] * min(1.0, final_intensity))
 
 @njit(parallel=True, fastmath=True, cache=True)
-def render_submesh_numba(px_array, z_buffer, v_arr, v_world, faces, face_uvs, texture, tex_alpha, sw, sh, cull, lights, is_light):
+def render_submesh_numba(px_array, z_buffer, v_arr, v_world, faces, face_uvs, texture, tex_alpha, sw, sh, cull, lights, is_light, wireframe_mode):
     for i in prange(faces.shape[0]):
         p1w, p2w, p3w = v_world[faces[i,0]], v_world[faces[i,1]], v_world[faces[i,2]]
         normal = np.cross(p2w - p1w, p3w - p1w)
@@ -54,7 +66,7 @@ def render_submesh_numba(px_array, z_buffer, v_arr, v_world, faces, face_uvs, te
             intensity = 1.0
         else:
             face_center = (p1w + p2w + p3w) / 3.0
-            intensity = 0.15 
+            intensity = 0.4  # Increased ambient light for visibility 
             for j in range(lights.shape[0]):
                 l_dir = lights[j] - face_center
                 l_dist_sq = l_dir[0]**2 + l_dir[1]**2 + l_dir[2]**2
@@ -65,47 +77,195 @@ def render_submesh_numba(px_array, z_buffer, v_arr, v_world, faces, face_uvs, te
                     intensity += max(0.0, dot) * (1.0 / (1.0 + 0.01 * l_dist + 0.002 * l_dist_sq))
 
         v1, v2, v3 = v_arr[faces[i,0]], v_arr[faces[i,1]], v_arr[faces[i,2]]
+        # Backface culling for non-light objects (fixed comparison)
         if cull and not is_light:
-            if (v2[0]-v1[0])*(v3[1]-v1[1]) - (v2[1]-v1[1])*(v3[0]-v1[0]) >= 0: continue
+            if (v2[0]-v1[0])*(v3[1]-v1[1]) - (v2[1]-v1[1])*(v3[0]-v1[0]) <= 0: continue
 
         draw_textured_triangle(px_array, z_buffer, v1, v2, v3, face_uvs[i,0], face_uvs[i,1], face_uvs[i,2], 
-                               texture, tex_alpha, sw, sh, intensity)
+                               texture, tex_alpha, sw, sh, intensity, wireframe_mode)
 
 class Engine3D:
-    def __init__(self, path=None, use_assimp=True):
+    def __init__(self, path=None):
         self.vertices = np.empty((0,3), dtype=np.float64)
         self.submeshes = []
         self.pos = np.array([0.0, 0.0, 0.0], dtype=np.float64)
         self.rot = np.array([0.0, 0.0, 0.0], dtype=np.float64)
         self.scale = np.array([1.0, 1.0, 1.0], dtype=np.float64)
-        self.is_light = False 
-        
-        if path:
-            if use_assimp: self.load_with_assimp(path)
-            else: self.load_obj(path)
-
-    def load_with_assimp(self, path):
-        scene = pyassimp.load(path, pyassimp.postprocess.aiProcess_Triangulate | 
-                                    pyassimp.postprocess.aiProcess_FlipUVs)
-        all_v = []
-        offset = 0
-        for m in scene.meshes:
-            all_v.extend(m.vertices)
-            f_arr = np.array(m.faces, dtype=np.int32) + offset
-            if m.texturecoords.any():
-                u_arr = np.array(m.texturecoords[0][:, :2], dtype=np.float64)
-                face_uvs = u_arr[m.faces].reshape((-1, 3, 2))
+        self.is_light = False
+        self.wireframe = False  # Wireframe toggle
+        self.cull_backfaces = True  # Backface culling toggle
+        # Skeletal animation preparation
+        self.vertex_weights = np.empty((0, 4), dtype=np.float64)  # Max 4 bone influences per vertex
+        self.bone_ids = np.empty((0, 4), dtype=np.int32)  # Max 4 bone IDs per vertex
+        if path: 
+            if path == "internal_cube":
+                self.create_internal_cube()
+            elif path == "blender_grid":
+                self.create_blender_grid()
             else:
-                face_uvs = np.zeros((len(f_arr), 3, 2))
+                self.load_with_trimesh(path)
+
+    def create_blender_grid(self):
+        # Create Blender-style grid lines from -10 to 10
+        grid_size = 20.0
+        grid_step = 2.0
+        grid_color = np.array([120, 120, 120], dtype=np.uint8)  # Light grey
+        
+        vertices = []
+        faces = []
+        
+        # Generate grid line vertices
+        line_vertices = []
+        
+        # Horizontal lines (along X axis)
+        for i in np.arange(-grid_size/2, grid_size/2 + grid_step, grid_step):
+            # Line from (-grid_size/2, 0, i) to (grid_size/2, 0, i)
+            v1 = np.array([-grid_size/2, 0.0, i])
+            v2 = np.array([grid_size/2, 0.0, i])
             
-            self.submeshes.append({
-                'faces': f_arr, 'uvs': face_uvs, 
-                'tex': np.zeros((128, 128, 3), dtype=np.uint8) + 150, 
-                'alpha': np.zeros((128, 128), dtype=np.uint8) + 255
-            })
-            offset += len(m.vertices)
-        self.vertices = np.array(all_v, dtype=np.float64)
-        pyassimp.release(scene)
+            # Create thin rectangle for line
+            thickness = 0.05
+            offset = np.array([0.0, 0.0, thickness])
+            
+            rect_verts = [
+                v1 - offset, v1 + offset,
+                v2 + offset, v2 - offset
+            ]
+            line_vertices.extend(rect_verts)
+            
+            base_idx = len(line_vertices) - 4
+            faces.extend([
+                [base_idx, base_idx + 1, base_idx + 2],
+                [base_idx, base_idx + 2, base_idx + 3]
+            ])
+        
+        # Vertical lines (along Z axis)  
+        for i in np.arange(-grid_size/2, grid_size/2 + grid_step, grid_step):
+            # Line from (i, 0, -grid_size/2) to (i, 0, grid_size/2)
+            v1 = np.array([i, 0.0, -grid_size/2])
+            v2 = np.array([i, 0.0, grid_size/2])
+            
+            # Create thin rectangle for line
+            thickness = 0.05
+            offset = np.array([thickness, 0.0, 0.0])
+            
+            rect_verts = [
+                v1 - offset, v1 + offset,
+                v2 + offset, v2 - offset
+            ]
+            line_vertices.extend(rect_verts)
+            
+            base_idx = len(line_vertices) - 4
+            faces.extend([
+                [base_idx, base_idx + 1, base_idx + 2],
+                [base_idx, base_idx + 2, base_idx + 3]
+            ])
+        
+        vertices = np.array(line_vertices, dtype=np.float64)
+        faces = np.array(faces, dtype=np.int32)
+        
+        # Create UVs for grid lines
+        face_uvs = np.zeros((len(faces), 3, 2), dtype=np.float64)
+        
+        self.vertices = np.ascontiguousarray(vertices)
+        self.submeshes.append({
+            'faces': np.ascontiguousarray(faces), 
+            'uvs': np.ascontiguousarray(face_uvs), 
+            'tex': np.ascontiguousarray(np.full((128, 128, 3), grid_color, dtype=np.uint8)), 
+            'alpha': np.ascontiguousarray(np.full((128, 128), 255, dtype=np.uint8))
+        })
+
+    def create_internal_cube(self):
+        # Generate internal cube using trimesh
+        geometry = trimesh.creation.box(extents=(1, 1, 1))
+        
+        self.vertices = np.ascontiguousarray(geometry.vertices.astype(np.float64))
+        faces = np.ascontiguousarray(geometry.faces.astype(np.int32))
+        
+        # Generate default UVs for cube
+        face_uvs = np.ascontiguousarray(np.zeros((len(faces), 3, 2), dtype=np.float64))
+        
+        self.submeshes.append({
+            'faces': faces, 
+            'uvs': face_uvs, 
+            'tex': np.ascontiguousarray(np.zeros((128, 128, 3), dtype=np.uint8) + 150), 
+            'alpha': np.ascontiguousarray(np.zeros((128, 128), dtype=np.uint8) + 255)
+        })
+
+    def load_with_trimesh(self, path):
+        mesh_data = trimesh.load(path)
+        
+        # Handle Scene objects by merging all geometries
+        if isinstance(mesh_data, trimesh.Scene):
+            # Get all geometries and merge them
+            geometries = []
+            for geom in mesh_data.geometry.values():
+                if isinstance(geom, trimesh.Trimesh):
+                    geometries.append(geom)
+            
+            if geometries:
+                # Merge all geometries into one
+                geometry = trimesh.util.concatenate(geometries)
+            else:
+                raise ValueError("No valid mesh geometries found in scene")
+        else:
+            geometry = mesh_data
+        
+        # Fix normals to ensure they point outward
+        geometry.fix_normals()
+        
+        # We DO NOT subtract the center here, to keep it "natural" like your old version
+        self.vertices = np.ascontiguousarray(geometry.vertices.astype(np.float64))
+        
+        faces = np.ascontiguousarray(geometry.faces.astype(np.int32))
+        
+        # Check for skeletal animation data (vertex attributes)
+        if hasattr(geometry, 'vertex_attributes'):
+            attrs = geometry.vertex_attributes
+            if 'joint' in attrs or 'weight' in attrs:
+                # Extract bone weights and IDs if available
+                if 'weight' in attrs:
+                    weights = attrs['weight']
+                    if len(weights.shape) == 2 and weights.shape[1] >= 4:
+                        self.vertex_weights = np.ascontiguousarray(weights[:, :4].astype(np.float64))
+                    else:
+                        self.vertex_weights = np.ascontiguousarray(np.zeros((len(self.vertices), 4), dtype=np.float64))
+                
+                if 'joint' in attrs:
+                    joints = attrs['joint']
+                    if len(joints.shape) == 2 and joints.shape[1] >= 4:
+                        self.bone_ids = np.ascontiguousarray(joints[:, :4].astype(np.int32))
+                    else:
+                        self.bone_ids = np.ascontiguousarray(np.zeros((len(self.vertices), 4), dtype=np.int32))
+        else:
+            # Initialize empty skeletal data
+            self.vertex_weights = np.ascontiguousarray(np.zeros((len(self.vertices), 4), dtype=np.float64))
+            self.bone_ids = np.ascontiguousarray(np.zeros((len(self.vertices), 4), dtype=np.int32))
+        
+        # Handle UV mapping correctly
+        if hasattr(geometry.visual, 'uv') and geometry.visual.uv is not None:
+            u_arr = np.ascontiguousarray(geometry.visual.uv.astype(np.float64))
+            u_arr[:, 1] = 1.0 - u_arr[:, 1] # Flip UV Y for Pygame
+            # Ensure proper shape (N, 3, 2) for Numba function
+            face_uvs = np.ascontiguousarray(u_arr[faces].reshape((-1, 3, 2)))
+        else:
+            face_uvs = np.ascontiguousarray(np.zeros((len(faces), 3, 2), dtype=np.float64))
+
+        # Create checkerboard default texture for better visibility
+        checkerboard = np.zeros((128, 128, 3), dtype=np.uint8)
+        for i in range(128):
+            for j in range(128):
+                if (i // 16 + j // 16) % 2 == 0:
+                    checkerboard[i, j] = [200, 200, 200]  # White squares
+                else:
+                    checkerboard[i, j] = [50, 50, 50]   # Black squares
+        
+        self.submeshes.append({
+            'faces': faces, 
+            'uvs': face_uvs, 
+            'tex': np.ascontiguousarray(checkerboard), 
+            'alpha': np.ascontiguousarray(np.full((128, 128), 255, dtype=np.uint8))
+        })
 
     def assign_texture(self, submesh_index, path):
         if 0 <= submesh_index < len(self.submeshes) and os.path.exists(path):
@@ -129,24 +289,40 @@ def run_engine():
     clock = pygame.time.Clock()
     z_buffer = np.zeros((sw, sh), dtype=np.float32)
 
-    # Load World/Object
-    world_obj = Engine3D("testing/teapot.obj")
-    world_obj.assign_texture(0, "testing/default.png")
-    world_obj.scale = np.array([0.5, 0.5, 0.5])
+    grid = Engine3D("blender_grid")
     
-    light_cube = Engine3D("testing/teapot.obj"); light_cube.is_light = True; light_cube.scale *= 0.1
-    objects = [world_obj, light_cube]
+    teapot = Engine3D("testing/teapot.obj")
+    # If your teapot has 2 parts, you'd call this for index 0 and 1
+    teapot.assign_texture(0, "testing/default.png")
+    teapot.scale = np.array([0.1, 0.1, 0.1])
     
-    # Camera State
-    cam_pos = np.array([0.0, 2.0, -10.0], dtype=np.float64)
-    cam_rot = [0.0, 0.0] # Yaw, Pitch
+    light1 = Engine3D("internal_cube")
+    light1.is_light = True
+    light1.scale *= 0.3
+    objects = [grid, teapot, light1]
+    # Blender-style orbit camera
+    camera_distance = 20.0
+    yaw = 0.0
+    pitch = 0.0
     mouse_locked = False
 
     while True:
-        dt = clock.tick(60) / 1000.0
+        dt = clock.tick() / 1000.0
         for event in pygame.event.get():
             if event.type == pygame.QUIT: pygame.quit(); sys.exit()
+            # Mouse wheel for zoom
+            if event.type == pygame.MOUSEWHEEL:
+                camera_distance = max(5.0, min(50.0, camera_distance - event.y * 2.0))
+            
+            # Mouse buttons 4/5 for zoom
             if event.type == pygame.MOUSEBUTTONDOWN:
+                if event.button == 4:  # Scroll up
+                    camera_distance = max(5.0, camera_distance - 1.0)
+                elif event.button == 5:  # Scroll down
+                    camera_distance = min(50.0, camera_distance + 1.0)
+            
+            # Mouse drag for orbit
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 mouse_locked = True
                 pygame.mouse.set_visible(False)
                 pygame.event.set_grab(True)
@@ -154,66 +330,67 @@ def run_engine():
                 mouse_locked = False
                 pygame.mouse.set_visible(True)
                 pygame.event.set_grab(False)
+            # Wireframe toggle
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_k:
+                for obj in objects:
+                    obj.wireframe = not obj.wireframe
+            # Backface culling toggle
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_c:
+                for obj in objects:
+                    obj.cull_backfaces = not obj.cull_backfaces
 
-        # Orbiting Light
-        t = pygame.time.get_ticks() * 0.002
-        light_cube.pos = np.array([math.sin(t)*10, 5, math.cos(t)*10])
+        # Dynamic light orbit around teapot
+        t = pygame.time.get_ticks() * 0.001
+        radius = 8.0
+        light1.pos = np.array([
+            math.sin(t) * radius,  # X: circle movement
+            3.0,                    # Y: fixed height above teapot
+            math.cos(t) * radius   # Z: circle movement
+        ])
 
+        # Mouse input for orbit
         if mouse_locked:
-            # --- Mouse Look ---
             mx, my = pygame.mouse.get_rel()
-            cam_rot[0] += mx * 0.003 # Yaw
-            cam_rot[1] -= my * 0.003 # Pitch
-            cam_rot[1] = max(-1.5, min(1.5, cam_rot[1])) # Limit vertical look
+            yaw += mx * 0.01
+            pitch = max(-1.5, min(1.5, pitch + my * 0.01))
+        
+        # Calculate camera position from spherical coordinates (exact formulas)
+        cam_pos = np.array([
+            camera_distance * math.cos(pitch) * math.sin(yaw),   # X
+            camera_distance * math.sin(pitch),                    # Y  
+            -camera_distance * math.cos(pitch) * math.cos(yaw)    # Z (negative for forward)
+        ], dtype=np.float64)
 
-            # --- WASD Open World Movement ---
-            keys = pygame.key.get_pressed()
-            speed = 15.0 * dt
-            # Forward vector based on Yaw
-            forward = np.array([math.sin(cam_rot[0]), 0, math.cos(cam_rot[0])])
-            right = np.array([math.cos(cam_rot[0]), 0, -math.sin(cam_rot[0])])
-            
-            if keys[pygame.K_w]: cam_pos += forward * speed
-            if keys[pygame.K_s]: cam_pos -= forward * speed
-            if keys[pygame.K_a]: cam_pos -= right * speed
-            if keys[pygame.K_d]: cam_pos += right * speed
-            if keys[pygame.K_SPACE]: cam_pos[1] += speed
-            if keys[pygame.K_LSHIFT]: cam_pos[1] -= speed
-
-        # Rendering Logic
         lights = np.array([obj.pos for obj in objects if obj.is_light], dtype=np.float64)
-        screen_surf.fill((15, 15, 25))
+        # Clear buffers each frame to prevent ghosting
+        screen_surf.fill((10, 10, 20))
         z_buffer.fill(0.0)
+        # Ensure px_array is properly accessed each frame
         px_array = pygame.surfarray.pixels3d(screen_surf)
         
-        # Build View Matrix (Camera Inverse)
-        cy, sy = math.cos(cam_rot[0]), math.sin(cam_rot[0])
-        cp, sp = math.cos(cam_rot[1]), math.sin(cam_rot[1])
-        # Rotation: Pitch then Yaw
-        R_cam = np.array([
-            [cy, 0, -sy],
-            [-sy*sp, cp, -cy*sp],
-            [sy*cp, sp, cy*cp]
-        ])
+        # Look-At Matrix (exact structure)
+        Forward = -cam_pos / np.linalg.norm(cam_pos)
+        Right = np.cross([0, 1, 0], Forward)
+        Right /= np.linalg.norm(Right)
+        Up = np.cross(Forward, Right)
+        R_cam = np.stack([Right, Up, Forward])
 
         for obj in objects:
             v_world = obj.get_world_vertices()
-            v_view = (v_world - cam_pos) @ R_cam # Direct view transform
-            
-            # Simple Near-Clipping
+            v_view = (v_world - cam_pos) @ R_cam.T
             zc = np.maximum(v_view[:, 2], 0.1)
+            # Y-up, Z-forward coordinate system with proper centering
             v_screen = np.empty_like(v_view)
-            v_screen[:, 0] = v_view[:, 0] * (sw / zc) + (sw / 2)
-            v_screen[:, 1] = (sh / 2) - v_view[:, 1] * (sh / zc) 
+            v_screen[:, 0] = v_view[:, 0] * (280.0 / zc) + (sw / 2)  # X: centered
+            v_screen[:, 1] = (sh / 2) - v_view[:, 1] * (280.0 / zc)  # Y: centered, flipped for screen coords
             v_screen[:, 2] = 1.0 / zc
 
             for mesh in obj.submeshes:
                 render_submesh_numba(px_array, z_buffer, v_screen, v_world, mesh['faces'], mesh['uvs'],
-                                     mesh['tex'], mesh['alpha'], sw, sh, True, lights, obj.is_light)
+                                     mesh['tex'], mesh['alpha'], sw, sh, obj.cull_backfaces, lights, obj.is_light, obj.wireframe)
 
-        # Final Blit
         display.blit(pygame.transform.scale(screen_surf, (800, 800)), (0, 0))
-        pygame.display.set_caption(f"Floppy Engine | FPS: {int(clock.get_fps())}")
+        pygame.display.set_caption(f"fps: {clock.get_fps()}")
         pygame.display.flip()
 
 if __name__ == "__main__":
