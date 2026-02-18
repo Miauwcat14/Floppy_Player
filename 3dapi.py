@@ -4,8 +4,9 @@ from numba import njit, prange
 import sys
 import os
 import math
+import pyassimp
 
-# --- Optimized Rasterizer ---
+# --- Optimized Rasterizer (Unchanged) ---
 @njit(fastmath=True, cache=True)
 def draw_textured_triangle(px_array, z_buffer, v1, v2, v3, t1, t2, t3, texture, tex_alpha, sw, sh, intensity):
     min_x = int(max(0, math.floor(min(v1[0], v2[0], v3[0]))))
@@ -64,7 +65,6 @@ def render_submesh_numba(px_array, z_buffer, v_arr, v_world, faces, face_uvs, te
                     intensity += max(0.0, dot) * (1.0 / (1.0 + 0.01 * l_dist + 0.002 * l_dist_sq))
 
         v1, v2, v3 = v_arr[faces[i,0]], v_arr[faces[i,1]], v_arr[faces[i,2]]
-        # Flipped the cross product check for culling to match coordinate flip
         if cull and not is_light:
             if (v2[0]-v1[0])*(v3[1]-v1[1]) - (v2[1]-v1[1])*(v3[0]-v1[0]) >= 0: continue
 
@@ -72,52 +72,40 @@ def render_submesh_numba(px_array, z_buffer, v_arr, v_world, faces, face_uvs, te
                                texture, tex_alpha, sw, sh, intensity)
 
 class Engine3D:
-    def __init__(self, obj_path=None):
+    def __init__(self, path=None, use_assimp=True):
         self.vertices = np.empty((0,3), dtype=np.float64)
-        self.submeshes = [] # List of {'faces': arr, 'uvs': arr, 'tex': arr, 'alpha': arr}
+        self.submeshes = []
         self.pos = np.array([0.0, 0.0, 0.0], dtype=np.float64)
         self.rot = np.array([0.0, 0.0, 0.0], dtype=np.float64)
         self.scale = np.array([1.0, 1.0, 1.0], dtype=np.float64)
         self.is_light = False 
         
-        if obj_path: self.load_obj(obj_path)
+        if path:
+            if use_assimp: self.load_with_assimp(path)
+            else: self.load_obj(path)
 
-    def load_obj(self, path):
-        if not os.path.exists(path): return
-        v_l, vt_l = [], []
-        current_faces, current_uvs = [], []
-        
-        with open(path, 'r') as f:
-            for line in f:
-                s = line.split()
-                if not s: continue
-                if s[0] == 'v': v_l.append([float(x) for x in s[1:4]])
-                elif s[0] == 'vt': vt_l.append([float(x) for x in s[1:3]])
-                elif s[0] in ('usemtl', 'o', 'g'):
-                    # Save existing submesh before starting new one
-                    if current_faces:
-                        self.add_submesh(current_faces, current_uvs)
-                        current_faces, current_uvs = [], []
-                elif s[0] == 'f':
-                    idx = [p.split('/') for p in s[1:]]
-                    for i in range(1, len(idx) - 1):
-                        current_faces.append([int(idx[0][0])-1, int(idx[i][0])-1, int(idx[i+1][0])-1])
-                        for k in [0, i, i+1]:
-                            if len(idx[k]) > 1 and idx[k][1]:
-                                uv = vt_l[int(idx[k][1])-1]
-                                current_uvs.append([uv[0], 1.0 - uv[1]])
-                            else: current_uvs.append([0.0, 0.0])
-        
-        if current_faces: self.add_submesh(current_faces, current_uvs)
-        self.vertices = np.ascontiguousarray(np.array(v_l, dtype=np.float64))
-
-    def add_submesh(self, faces, uvs):
-        f_arr = np.ascontiguousarray(np.array(faces, dtype=np.int32))
-        u_arr = np.ascontiguousarray(np.array(uvs, dtype=np.float64).reshape((-1, 3, 2)))
-        # Default placeholder texture
-        tex = np.zeros((128, 128, 3), dtype=np.uint8) + 150
-        alpha = np.zeros((128, 128), dtype=np.uint8) + 255
-        self.submeshes.append({'faces': f_arr, 'uvs': u_arr, 'tex': tex, 'alpha': alpha})
+    def load_with_assimp(self, path):
+        scene = pyassimp.load(path, pyassimp.postprocess.aiProcess_Triangulate | 
+                                    pyassimp.postprocess.aiProcess_FlipUVs)
+        all_v = []
+        offset = 0
+        for m in scene.meshes:
+            all_v.extend(m.vertices)
+            f_arr = np.array(m.faces, dtype=np.int32) + offset
+            if m.texturecoords.any():
+                u_arr = np.array(m.texturecoords[0][:, :2], dtype=np.float64)
+                face_uvs = u_arr[m.faces].reshape((-1, 3, 2))
+            else:
+                face_uvs = np.zeros((len(f_arr), 3, 2))
+            
+            self.submeshes.append({
+                'faces': f_arr, 'uvs': face_uvs, 
+                'tex': np.zeros((128, 128, 3), dtype=np.uint8) + 150, 
+                'alpha': np.zeros((128, 128), dtype=np.uint8) + 255
+            })
+            offset += len(m.vertices)
+        self.vertices = np.array(all_v, dtype=np.float64)
+        pyassimp.release(scene)
 
     def assign_texture(self, submesh_index, path):
         if 0 <= submesh_index < len(self.submeshes) and os.path.exists(path):
@@ -141,18 +129,21 @@ def run_engine():
     clock = pygame.time.Clock()
     z_buffer = np.zeros((sw, sh), dtype=np.float32)
 
-    teapot = Engine3D("testing/teapot.obj")
-    # If your teapot has 2 parts, you'd call this for index 0 and 1
-    teapot.assign_texture(0, "testing/default.png")
-    teapot.scale = np.array([0.1, 0.1, 0.1])
+    # Load World/Object
+    world_obj = Engine3D("testing/teapot.obj")
+    world_obj.assign_texture(0, "testing/default.png")
+    world_obj.scale = np.array([0.5, 0.5, 0.5])
     
-    light1 = Engine3D("testing/cube.obj"); light1.is_light = True; light1.scale *= 0.3
-    objects = [teapot, light1]
-    cam_pos, cam_rot = np.array([0.0, 0.0, -15.0], dtype=np.float64), [0.0, 0.0]
+    light_cube = Engine3D("testing/teapot.obj"); light_cube.is_light = True; light_cube.scale *= 0.1
+    objects = [world_obj, light_cube]
+    
+    # Camera State
+    cam_pos = np.array([0.0, 2.0, -10.0], dtype=np.float64)
+    cam_rot = [0.0, 0.0] # Yaw, Pitch
     mouse_locked = False
 
     while True:
-        dt = clock.tick() / 1000.0
+        dt = clock.tick(60) / 1000.0
         for event in pygame.event.get():
             if event.type == pygame.QUIT: pygame.quit(); sys.exit()
             if event.type == pygame.MOUSEBUTTONDOWN:
@@ -164,39 +155,65 @@ def run_engine():
                 pygame.mouse.set_visible(True)
                 pygame.event.set_grab(False)
 
-        # Light Orbit
+        # Orbiting Light
         t = pygame.time.get_ticks() * 0.002
-        light1.pos = np.array([math.sin(t)*7, math.cos(t*0.5)*5, math.cos(t)*7])
+        light_cube.pos = np.array([math.sin(t)*10, 5, math.cos(t)*10])
 
         if mouse_locked:
+            # --- Mouse Look ---
             mx, my = pygame.mouse.get_rel()
-            cam_rot[0] += mx * 0.002
-            cam_rot[1] -= my * 0.002
+            cam_rot[0] += mx * 0.003 # Yaw
+            cam_rot[1] -= my * 0.003 # Pitch
+            cam_rot[1] = max(-1.5, min(1.5, cam_rot[1])) # Limit vertical look
 
+            # --- WASD Open World Movement ---
+            keys = pygame.key.get_pressed()
+            speed = 15.0 * dt
+            # Forward vector based on Yaw
+            forward = np.array([math.sin(cam_rot[0]), 0, math.cos(cam_rot[0])])
+            right = np.array([math.cos(cam_rot[0]), 0, -math.sin(cam_rot[0])])
+            
+            if keys[pygame.K_w]: cam_pos += forward * speed
+            if keys[pygame.K_s]: cam_pos -= forward * speed
+            if keys[pygame.K_a]: cam_pos -= right * speed
+            if keys[pygame.K_d]: cam_pos += right * speed
+            if keys[pygame.K_SPACE]: cam_pos[1] += speed
+            if keys[pygame.K_LSHIFT]: cam_pos[1] -= speed
+
+        # Rendering Logic
         lights = np.array([obj.pos for obj in objects if obj.is_light], dtype=np.float64)
-        screen_surf.fill((10, 10, 20))
+        screen_surf.fill((15, 15, 25))
         z_buffer.fill(0.0)
         px_array = pygame.surfarray.pixels3d(screen_surf)
         
-        c_y, s_y, c_p, s_p = math.cos(cam_rot[0]), math.sin(cam_rot[0]), math.cos(cam_rot[1]), math.sin(cam_rot[1])
-        R_cam = np.array([[c_y, 0, s_y], [s_y*s_p, c_p, -c_y*s_p], [-s_y*c_p, s_p, c_y*c_p]])
+        # Build View Matrix (Camera Inverse)
+        cy, sy = math.cos(cam_rot[0]), math.sin(cam_rot[0])
+        cp, sp = math.cos(cam_rot[1]), math.sin(cam_rot[1])
+        # Rotation: Pitch then Yaw
+        R_cam = np.array([
+            [cy, 0, -sy],
+            [-sy*sp, cp, -cy*sp],
+            [sy*cp, sp, cy*cp]
+        ])
 
         for obj in objects:
             v_world = obj.get_world_vertices()
-            v_view = (v_world - cam_pos) @ R_cam.T
+            v_view = (v_world - cam_pos) @ R_cam # Direct view transform
+            
+            # Simple Near-Clipping
             zc = np.maximum(v_view[:, 2], 0.1)
             v_screen = np.empty_like(v_view)
-            v_screen[:, 0] = v_view[:, 0] * (280.0 / zc) + (sw / 2)
-            # FLIP: Subtract from center instead of adding to fix world orientation
-            v_screen[:, 1] = (sh / 2) - v_view[:, 1] * (280.0 / zc) 
+            v_screen[:, 0] = v_view[:, 0] * (sw / zc) + (sw / 2)
+            v_screen[:, 1] = (sh / 2) - v_view[:, 1] * (sh / zc) 
             v_screen[:, 2] = 1.0 / zc
 
             for mesh in obj.submeshes:
                 render_submesh_numba(px_array, z_buffer, v_screen, v_world, mesh['faces'], mesh['uvs'],
                                      mesh['tex'], mesh['alpha'], sw, sh, True, lights, obj.is_light)
 
+        # Final Blit
         display.blit(pygame.transform.scale(screen_surf, (800, 800)), (0, 0))
-        pygame.display.set_caption(f"fps: {clock.get_fps()}")
+        pygame.display.set_caption(f"Floppy Engine | FPS: {int(clock.get_fps())}")
         pygame.display.flip()
 
 if __name__ == "__main__":
