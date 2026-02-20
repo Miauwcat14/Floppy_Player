@@ -6,9 +6,9 @@ import os
 import math
 import trimesh
 
-# --- Optimized Rasterizer ---
 @njit(fastmath=True, cache=True)
 def draw_textured_triangle(px_array, z_buffer, v1, v2, v3, t1, t2, t3, texture, tex_alpha, sw, sh, intensity, wireframe_mode=False):
+    # 1. Bounding Box Clamping
     min_x = int(max(0, math.floor(min(v1[0], v2[0], v3[0]))))
     max_x = int(min(sw - 1, math.ceil(max(v1[0], v2[0], v3[0]))))
     min_y = int(max(0, math.floor(min(v1[1], v2[1], v3[1]))))
@@ -18,74 +18,131 @@ def draw_textured_triangle(px_array, z_buffer, v1, v2, v3, t1, t2, t3, texture, 
     if den == 0.0: return
     inv_den = 1.0 / den
 
+    # Barycentric coefficients
     a1, b1 = (v2[1] - v3[1]) * inv_den, (v3[0] - v2[0]) * inv_den
     c1 = ((v2[1] - v3[1]) * (-v3[0]) + (v3[0] - v2[0]) * (-v3[1])) * inv_den
     a2, b2 = (v3[1] - v1[1]) * inv_den, (v1[0] - v3[0]) * inv_den
     c2 = ((v3[1] - v1[1]) * (-v3[0]) + (v1[0] - v3[0]) * (-v3[1])) * inv_den
 
-    tw, th = texture.shape[0] - 1, texture.shape[1] - 1
+    # --- PERSPECTIVE PREPARATION ---
+    # In your engine, v[2] is already 1/Z (calculated in the main loop)
+    invz1, invz2, invz3 = v1[2], v2[2], v3[2]
+    
+    # Pre-multiply UVs by their respective 1/Z
+    u1z, v1z = t1[0] * invz1, t1[1] * invz1
+    u2z, v2z = t2[0] * invz2, t2[1] * invz2
+    u3z, v3z = t3[0] * invz3, t3[1] * invz3
 
-    for y in range(min_y, max_y + 1):
-        for x in range(min_x, max_x + 1):
-            w1 = a1 * x + b1 * y + c1
-            w2 = a2 * x + b2 * y + c2
-            w3 = 1.0 - w1 - w2
-            if w1 >= 0.0 and w2 >= 0.0 and w3 >= 0.0:
-                iz = w1 * v1[2] + w2 * v2[2] + w3 * v3[2]
-                if iz > z_buffer[x, y]:
-                    # Wireframe mode: draw edges where barycentric weights are near 0
-                    if wireframe_mode:
-                        edge_threshold = 0.05
-                        if (w1 < edge_threshold or w2 < edge_threshold or w3 < edge_threshold):
-                            final_intensity = 2.0  # Bright wireframe
-                        else:
-                            continue  # Skip interior pixels
-                    else:
-                        final_intensity = intensity
+    tw_f, th_f = float(texture.shape[0] - 1), float(texture.shape[1] - 1)
+    tw_i, th_i = texture.shape[0], texture.shape[1]
+    
+    TILE_SIZE = 16
+
+    for ty in range(min_y, max_y + 1, TILE_SIZE):
+        for tx_tile in range(min_x, max_x + 1, TILE_SIZE):
+            tile_max_x = min(tx_tile + TILE_SIZE - 1, max_x)
+            tile_max_y = min(ty + TILE_SIZE - 1, max_y)
+            
+            # Tile Coarse Cull
+            w1_c1 = a1 * tx_tile + b1 * ty + c1
+            w2_c1 = a2 * tx_tile + b2 * ty + c2
+            w1_c2 = a1 * tile_max_x + b1 * ty + c1
+            w2_c2 = a2 * tile_max_x + b2 * ty + c2
+            w1_c3 = a1 * tx_tile + b1 * tile_max_y + c1
+            w2_c3 = a2 * tx_tile + b2 * tile_max_y + c2
+            w1_c4 = a1 * tile_max_x + b1 * tile_max_y + c1
+            w2_c4 = a2 * tile_max_x + b2 * tile_max_y + c2
+
+            if (w1_c1 < 0 and w1_c2 < 0 and w1_c3 < 0 and w1_c4 < 0) or \
+               (w2_c1 < 0 and w2_c2 < 0 and w2_c3 < 0 and w2_c4 < 0) or \
+               ((1-w1_c1-w2_c1) < 0 and (1-w1_c2-w2_c2) < 0 and (1-w1_c3-w2_c3) < 0 and (1-w1_c4-w2_c4) < 0):
+                continue
+
+            for y in range(ty, tile_max_y + 1):
+                w1_row = a1 * tx_tile + b1 * y + c1
+                w2_row = a2 * tx_tile + b2 * y + c2
+                
+                for x in range(tx_tile, tile_max_x + 1):
+                    w1, w2 = w1_row, w2_row
+                    w3 = 1.0 - w1 - w2
                     
-                    tx, ty = float(w1 * t1[0] + w2 * t2[0] + w3 * t3[0]) * tw, float(w1 * t1[1] + w2 * t2[1] + w3 * t3[1]) * th
-                    tx, ty = int(tx) % (tw + 1), int(ty) % (th + 1)
+                    if w1 >= 0.0 and w2 >= 0.0 and w3 >= 0.0:
+                        # 1. Interpolate 1/Z (This is used for the Z-Buffer)
+                        interp_invz = w1 * invz1 + w2 * invz2 + w3 * invz3
+                        
+                        if interp_invz > z_buffer[x, y]:
+                            if wireframe_mode:
+                                if w1 < 0.03 or w2 < 0.03 or w3 < 0.03:
+                                    f_int = 2.0
+                                else:
+                                    w1_row += a1
+                                    w2_row += a2
+                                    continue
+                            else:
+                                f_int = intensity
+
+                            # 2. Interpolate U/Z and V/Z
+                            interp_uz = w1 * u1z + w2 * u2z + w3 * u3z
+                            interp_vz = w1 * v1z + w2 * v2z + w3 * v3z
+
+                            # 3. Project back to 2D texture space
+                            # UV = (U/Z) / (1/Z)
+                            z_real = 1.0 / interp_invz
+                            u = (interp_uz * z_real) * tw_f
+                            v = (interp_vz * z_real) * th_f
+                            
+                            sam_x, sam_y = int(u) % tw_i, int(v) % th_i
+                            
+                            if tex_alpha[sam_x, sam_y] > 128:
+                                z_buffer[x, y] = interp_invz
+                                c_val = min(1.0, f_int)
+                                px_array[x, y, 0] = np.uint8(texture[sam_x, sam_y, 0] * c_val)
+                                px_array[x, y, 1] = np.uint8(texture[sam_x, sam_y, 1] * c_val)
+                                px_array[x, y, 2] = np.uint8(texture[sam_x, sam_y, 2] * c_val)
                     
-                    # Alpha transparency check (strict for normal mode)
-                    if tex_alpha[tx, ty] > 128:
-                        z_buffer[x, y] = iz
-                        px_array[x, y, 0] = np.uint8(texture[tx, ty, 0] * min(1.0, final_intensity))
-                        px_array[x, y, 1] = np.uint8(texture[tx, ty, 1] * min(1.0, final_intensity))
-                        px_array[x, y, 2] = np.uint8(texture[tx, ty, 2] * min(1.0, final_intensity))
+                    w1_row += a1
+                    w2_row += a2
 
 @njit(parallel=True, fastmath=True, cache=True)
 def render_submesh_numba(px_array, z_buffer, v_arr, v_world, faces, face_uvs, texture, tex_alpha, sw, sh, cull, lights, is_light, wireframe_mode):
     for i in prange(faces.shape[0]):
-        p1w, p2w, p3w = v_world[faces[i,0]], v_world[faces[i,1]], v_world[faces[i,2]]
-        normal = np.cross(p2w - p1w, p3w - p1w)
-        n_len = np.sqrt(normal[0]**2 + normal[1]**2 + normal[2]**2)
-        if n_len == 0: continue
-        normal /= n_len
+        v1, v2, v3 = v_arr[faces[i,0]], v_arr[faces[i,1]], v_arr[faces[i,2]]
+        
+        if v1[2] <= 0 or v2[2] <= 0 or v3[2] <= 0:
+            continue
 
+        # Backface culling
+        if cull and not is_light:
+            if (v2[0]-v1[0])*(v3[1]-v1[1]) - (v2[1]-v1[1])*(v3[0]-v1[0]) <= 0: 
+                continue
+
+        p1w, p2w, p3w = v_world[faces[i,0]], v_world[faces[i,1]], v_world[faces[i,2]]
+        
+        # Lighting
         if is_light:
             intensity = 1.0
         else:
+            normal = np.cross(p2w - p1w, p3w - p1w).astype(np.float32)
+            n_len = np.sqrt(normal[0]**2 + normal[1]**2 + normal[2]**2)
+            if n_len == 0: continue
+            normal /= n_len
+            
             face_center = (p1w + p2w + p3w) / 3.0
-            intensity = 0.4  # Increased ambient light for visibility 
+            intensity = 0.4
             for j in range(lights.shape[0]):
                 l_dir = lights[j] - face_center
                 l_dist_sq = l_dir[0]**2 + l_dir[1]**2 + l_dir[2]**2
                 l_dist = np.sqrt(l_dist_sq)
                 if l_dist != 0:
-                    l_dir /= l_dist
-                    dot = normal[0]*l_dir[0] + normal[1]*l_dir[1] + normal[2]*l_dir[2]
+                    dot = np.dot(normal, l_dir.astype(np.float32)) / l_dist
                     intensity += max(0.0, dot) * (1.0 / (1.0 + 0.01 * l_dist + 0.002 * l_dist_sq))
-
-        v1, v2, v3 = v_arr[faces[i,0]], v_arr[faces[i,1]], v_arr[faces[i,2]]
-        # Backface culling for non-light objects (fixed comparison)
-        if cull and not is_light:
-            if (v2[0]-v1[0])*(v3[1]-v1[1]) - (v2[1]-v1[1])*(v3[0]-v1[0]) <= 0: continue
 
         draw_textured_triangle(px_array, z_buffer, v1, v2, v3, face_uvs[i,0], face_uvs[i,1], face_uvs[i,2], 
                                texture, tex_alpha, sw, sh, intensity, wireframe_mode)
 
 class Engine3D:
     def __init__(self, path=None):
+        self.bounding_radius = 0.0
         self.vertices = np.empty((0,3), dtype=np.float64)
         self.submeshes = []
         self.pos = np.array([0.0, 0.0, 0.0], dtype=np.float64)
@@ -104,6 +161,33 @@ class Engine3D:
                 self.create_blender_grid()
             else:
                 self.load_with_trimesh(path)
+            self._calculate_bounds()
+
+    def _calculate_bounds(self):
+        if len(self.vertices) > 0:
+            # Calculate distance of each vertex from local (0,0,0)
+            distances = np.sqrt(np.sum(self.vertices**2, axis=1))
+            self.bounding_radius = np.max(distances)
+
+    def is_in_frustum(self, cam_pos, R_cam, sw, sh):
+        rel_pos = self.pos - cam_pos
+        view_pos = rel_pos @ R_cam.T
+        
+        z = view_pos[2]
+        r = self.bounding_radius * np.max(self.scale)
+
+        # 1. Near plane check (Z > 0)
+        if z + r < 0.1: 
+            return False
+        h_margin = (sw / 2.0) * (z / 280.0) + r
+        if abs(view_pos[0]) > h_margin:
+            return False
+
+        v_margin = (sh / 2.0) * (z / 280.0) + r
+        if abs(view_pos[1]) > v_margin:
+            return False
+
+        return True
 
     def create_blender_grid(self):
         # Create Blender-style grid lines from -10 to 10
@@ -376,6 +460,8 @@ def run_engine():
         R_cam = np.stack([Right, Up, Forward])
 
         for obj in objects:
+            if not obj.is_in_frustum(cam_pos, R_cam, sw, sh):
+                continue
             v_world = obj.get_world_vertices()
             v_view = (v_world - cam_pos) @ R_cam.T
             zc = np.maximum(v_view[:, 2], 0.1)
