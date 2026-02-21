@@ -356,9 +356,17 @@ def main():
                         if target_block.get_rect().colliderect(trash_rect):
                             delete_chain(target_block, blocks)
                         else:
-                            if target_block.try_snap(blocks):
+                            # Try to snap
+                            snapped = target_block.try_snap(blocks)
+                            
+                            if snapped:
+                                # If it snapped, it should be removed from the top-level list
                                 if target_block in blocks:
                                     blocks.remove(target_block)
+                            else:
+                                # SAFETY: If it's NOT snapped and NOT in the list, put it back!
+                                if target_block not in blocks and target_block.parent is None:
+                                    blocks.append(target_block)
                         
                         target_block = None
 
@@ -391,7 +399,7 @@ def main():
             else:
                 screen.blit(trash, (trash_rect.x, trash_rect.y))
 
-            for b in blocks:
+            for b in blocks: #b.stamp(s)
                 b.update(mpos, blocks)
 
             if is_storage:
