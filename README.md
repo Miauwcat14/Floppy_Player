@@ -24,7 +24,7 @@ pip install pygame
 Clone the Repository:
 
 Bash
-git clone https://github.com/yourusername/floppy-player.git
+git clone https://github.com/Miauwcat14/Floppy_Player.git
 cd floppy-player
 Run the Editor:
 
