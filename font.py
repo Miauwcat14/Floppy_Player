@@ -13,3 +13,9 @@ class Font:
             self.font = pygame.font.Font(self.file, size)
         surf = self.font.render(text, True, color)
         screen.blit(surf, pos)
+
+    def get_size(self, text: str, size: int):
+        if size != self.size:
+            self.size = size
+            self.font = pygame.font.Font(self.file, size)
+        return self.font.size(text) # This returns (width, height)

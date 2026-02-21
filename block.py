@@ -130,22 +130,54 @@ class Block:
         display.blit(self.parts[11], (x + floor_w, bottom_y))
     
     def draw_oval_block(self, display, x, y):
-        # O-blocks should match the exact shape of input slots (rounded rectangles)
-        padding_x = 6
-        padding_y = 2
-        txt_w, txt_h = self.font.font.size(self.text.split('[')[0].strip())
-        sw = max(16, txt_w + padding_x * 2)
-        sh = max(txt_h + padding_y * 2, 12)
+        # 1. Get layout data
+        _, content_h, slot_rects, _, (total_w, total_h) = self.compute_layout()
         
-        # Use the same styling as slots
-        rect = pygame.Rect(x, y, sw, sh)
-        pygame.draw.rect(display, self.color, rect, border_radius=4)
-        pygame.draw.rect(display, (0, 0, 0), rect, width=1, border_radius=4)
+        # 2. Draw the "Pill" background
+        rect = pygame.Rect(x, y, total_w, total_h)
+        pygame.draw.rect(display, self.color, rect, border_radius=total_h//2)
+        pygame.draw.rect(display, (0, 0, 0), rect, width=1, border_radius=total_h//2)
 
-        # Render the text centered
-        txt_x = x + (sw - txt_w) // 2
-        txt_y = y + (sh - txt_h) // 2
-        self.font.render(display, self.text.split('[')[0].strip(), (0, 0, 0), 12, (txt_x, txt_y))
+        # 3. Render content (Text and Slots)
+        # Match the offsets used in compute_layout exactly (15, 3)
+        cursor_x = x + 15 
+        cursor_y = y + 3
+        
+        slot_index_counter = 0
+        for part in self.template_parts:
+            if part[0] == "text":
+                self.font.render(display, part[1], (0, 0, 0), 12, (cursor_x, cursor_y))
+                tw, _ = self.font.font.size(part[1])
+                cursor_x += tw
+            else:
+                slot_data = part[1]
+                val = slot_data["value"]
+                
+                # If the slot contains a nested block (O-block inside O-block)
+                if isinstance(val, Block):
+                    # Center the nested block vertically within the parent's height
+                    nested_size = val.get_size()
+                    val.stamp_at(display, (cursor_x, y + (total_h - nested_size[1])//2))
+                    cursor_x += nested_size[0] + 5
+                else:
+                    # Regular Slot (Text/Number)
+                    display_text = str(val) if (val != "") else str(slot_data.get("default", ""))
+                    txt_w, txt_h = self.font.font.size(display_text if display_text != "" else " ")
+                    
+                    sw = max(20, txt_w + 10)
+                    sh = max(txt_h + 4, 15)
+                    
+                    s_rect = pygame.Rect(cursor_x, cursor_y, sw, sh)
+                    pygame.draw.rect(display, self.slot_fill, s_rect, border_radius=4)
+                    
+                    # Center text in slot
+                    tx = cursor_x + (sw - txt_w) // 2
+                    ty = cursor_y + (sh - txt_h) // 2
+                    self.font.render(display, display_text, (0, 0, 0), 12, (tx, ty))
+                    
+                    cursor_x += sw + 5
+                
+                slot_index_counter += 1
 
     def _parse_text(self, text):
         """
@@ -183,7 +215,8 @@ class Block:
                         stype = "number"
                     except Exception:
                         stype = "string"
-                parts.append(("slot", {"type": stype, "value": sval}))
+                # FIX: Added 'default' key to remember original text
+                parts.append(("slot", {"type": stype, "value": sval, "default": sval}))
                 i = j + 1
             else:
                 cur += c
@@ -193,13 +226,22 @@ class Block:
         return parts
 
     def _rebuild_text_from_parts(self):
-        out = ""
-        for part in self.template_parts:
-            if part[0] == "text":
-                out += part[1]
-            else:
-                out += "[" + str(part[1]["value"]) + "]"
-        return out
+        res = ""
+        for p_type, p_val in self.template_parts:
+            if p_type == "text":
+                res += p_val
+            elif p_type == "slot":
+                val = p_val["value"]
+                
+                # Check if the value inside the slot is another Block
+                if isinstance(val, Block):
+                    # Call this same function on the nested block!
+                    # We use () for nested blocks and [] for typed values to tell them apart
+                    res += f"({val._rebuild_text_from_parts()})"
+                else:
+                    # It's just a normal value (like 'C4' or '1')
+                    res += f"[{val}]"
+        return res
 
     def compute_layout(self):
         """
@@ -237,8 +279,8 @@ class Block:
                     val.compute_layout() # Recursively update child
                     sw, sh = val.get_size()
                 else:
-                    # Standard text/empty slot logic
-                    disp = str(val) if val is not None else ""
+                    # FIX: Fallback to default if value is empty
+                    disp = str(val) if (val is not None and val != "") else str(slot_data.get("default", ""))
                     txt_w, txt_h = self.font.font.size(disp if disp != "" else " ")
                     sw = max(20, txt_w + 10) # Minimum width for empty slot
                     sh = max(txt_h + 4, 15)
@@ -258,47 +300,30 @@ class Block:
         return total_content_w, content_h, slot_rects, display_texts, (int(total_w), int(total_h))
 
     def get_size(self):
-        if self.btype == "o":
-            # For O-blocks, use the same sizing as slots
-            padding_x = 6
-            padding_y = 2
-            txt_w, txt_h = self.font.font.size(self.text.split('[')[0].strip())
-            sw = max(16, txt_w + padding_x * 2)
-            sh = max(txt_h + padding_y * 2, 12)
-            return (sw, sh)
-        
-        _, content_h, slot_rects, _, (total_w, _) = self.compute_layout()
+        # Always use compute_layout as the source of truth for base dimensions
+        _, content_h, slot_rects, _, (total_w, total_h) = self.compute_layout()
         self.slot_rects = slot_rects
         
-        # Base height of the block's top bar
+        if self.btype == "o":
+            return (total_w, total_h)
+        
+        # Height of the top bar for N and L types
         my_h = content_h + 4 
         
         if self.btype == "l":
-            # Calculate height of the ENTIRE nested chain
-            nested_h = 14 # Minimum "empty" mouth height
-            
+            nested_h = 14 
             if self.nested_child:
                 nested_h = 0
                 curr = self.nested_child
                 while curr:
-                    # Add current block's height
-                    # overlap (-1) is crucial for seamless look
                     nested_h += curr.get_size()[1] - 1 
                     curr = curr.child
-                
-                # Add a little padding so the bottom bar doesn't touch the last block
                 nested_h += 4
-
-            # Total L-Height = Top Bar + Inner Chain + Bottom Bar (approx 8px)
             total_h = my_h + nested_h + 12
         else:
             total_h = my_h
 
         return (total_w, total_h)
-
-    def get_rect(self):
-        w, h = self.get_size()
-        return pygame.Rect(int(self.pos[0]), int(self.pos[1]), w, h)
     
     def get_header_rect(self):
         """Returns the rect of just the top 'handle' of the block."""
@@ -306,30 +331,58 @@ class Block:
         h = self.compute_layout()[1] + 8
         return pygame.Rect(self.pos[0], self.pos[1], w, h)
 
+    def get_rect(self):
+        # Only return the height of the top "bar" for selection/dragging
+        # This stops L-blocks from "stealing" clicks from blocks inside them
+        w, _ = self.get_size()
+        _, content_h, _, _, _ = self.compute_layout()
+        header_h = content_h + 8 
+        return pygame.Rect(int(self.pos[0]), int(self.pos[1]), w, header_h)
+
+    def get_toolbox_height(self):
+        if self.btype == "o":
+            return self.get_size()[1]
+        
+        # Get the height of the top bar
+        _, content_h, _, _, _ = self.compute_layout()
+        header_h = content_h + 8 
+        
+        if self.btype == "l":
+            # Header + default mouth height (14) + bottom bar (8)
+            return header_h + 14 + 8
+            
+        return header_h
+
     def get_sequence(self):
-        sequence = [self.text]
+        # Uses the new recursive text builder
+        sequence = [self._rebuild_text_from_parts()]
         if self.child:
             sequence.extend(self.child.get_sequence())
         return sequence
 
     def update(self, mouse_pos, blocks):
-        # 1. Update self
+        # 1. Update self position if dragging
         if self.dragging:
             self.pos[0] = int(mouse_pos[0] + self.offset[0])
             self.pos[1] = int(mouse_pos[1] + self.offset[1])
         
-        # 2. Lock Substack (Inside)
+        # 2. Lock Substack (Inside C-mouth) - ONLY if not dragging!
         if self.nested_child:
-            header_h = self.compute_layout()[1] + 5
-            self.nested_child.pos[0] = self.pos[0] + 13
-            self.nested_child.pos[1] = self.pos[1] + header_h
-            self.nested_child.update(mouse_pos, blocks) # Recurse
+            if not self.nested_child.dragging: # <--- ADD THIS CHECK
+                header_h = self.compute_layout()[1] + 5
+                self.nested_child.pos[0] = self.pos[0] + 13
+                self.nested_child.pos[1] = self.pos[1] + header_h
+            
+            # Always update children so they can update THEIR children
+            self.nested_child.update(mouse_pos, blocks)
 
-        # 3. Lock Chain (Below)
+        # 3. Lock Chain (Below) - ONLY if not dragging!
         if self.child:
-            self.child.pos[0] = self.pos[0]
-            self.child.pos[1] = self.pos[1] + self.get_size()[1] - 1
-            self.child.update(mouse_pos, blocks) # Recurse
+            if not self.child.dragging: # <--- ADD THIS CHECK
+                self.child.pos[0] = self.pos[0]
+                self.child.pos[1] = self.pos[1] + self.get_size()[1] - 1
+                
+            self.child.update(mouse_pos, blocks)
     
     def try_snap(self, blocks):
         self.dragging = False
@@ -369,7 +422,7 @@ class Block:
                     other.nested_child = self
                     self.parent = other
                     self.pos = list(mouth_pos)
-                    return
+                    return True
 
             # --- LANDMARK B: THE FLOOR (Bottom Snap) ---
             floor_pos = (other.pos[0], other.pos[1] + full_h - 1)
@@ -381,7 +434,8 @@ class Block:
                 other.child = self
                 self.parent = other
                 self.pos = list(floor_pos)
-                return
+                return True
+        return False
 
     def get_last_in_chain(self):
         curr = self
@@ -390,11 +444,10 @@ class Block:
         return curr
 
     def input_at(self, pos):
-        # We re-run the layout math to find where the slots ARE currently on the screen
-        total_content_w, content_h, slot_rects, display_texts, (w, h) = self.compute_layout()
+        total_content_w, content_h, slot_rects, _, (w, h) = self.compute_layout()
         
-        # This starting point must match your cursor_x/y in _stamp_at exactly
-        start_x = self.pos[0] + 15 
+        # Adjust start position based on block type
+        start_x = self.pos[0] + (15 if self.btype != "o" else 15)
         start_y = self.pos[1] + 3
         
         slot_index = 0
@@ -405,15 +458,16 @@ class Block:
                 tw, _ = self.font.font.size(part[1])
                 current_x += tw
             else:
-                # Get the dimensions for this specific slot
                 rect_dim = slot_rects[slot_index]
-                # Construct a temporary global rect for collision checking
                 global_slot_rect = pygame.Rect(current_x, start_y, rect_dim.width, rect_dim.height)
                 
                 if global_slot_rect.collidepoint(pos):
-                    return slot_index
+                    # Only allow interaction if the slot DOES NOT contain a nested block
+                    # This allows the block's own get_block_at to handle the nested block instead
+                    if not isinstance(self.slots[slot_index]["value"], Block):
+                        return slot_index
                 
-                current_x += rect_dim.width + 2
+                current_x += rect_dim.width + 5 # Use same spacing as renderer
                 slot_index += 1
         return None
 
@@ -422,7 +476,8 @@ class Block:
             return
         self.editing_index = slot_index
         curr = self.slots[slot_index]["value"]
-        self.editing_text = str(curr) if curr is not None else ""
+        # FIX: Ensure we don't try to edit a block object as text
+        self.editing_text = str(curr) if (curr is not None and not isinstance(curr, Block)) else ""
         self._caret_blink_ts = pygame.time.get_ticks()
 
     def stop_edit_input(self, commit=True):
@@ -430,7 +485,7 @@ class Block:
             slot = self.slots[self.editing_index]
             
             if slot["type"] == "number":
-                # 1. ADD THIS: If it's a variable, keep it as text and skip float conversion
+                # 1. If it's a variable, keep it as text and skip float conversion
                 if self.editing_text.startswith("var:"):
                     slot["value"] = self.editing_text
                 else:
@@ -445,7 +500,6 @@ class Block:
                         else:
                             slot["value"] = ""
                     except Exception:
-                        # invalid numeric -> keep previous value
                         pass
             else:
                 slot["value"] = self.editing_text
@@ -458,9 +512,9 @@ class Block:
                     new_parts.append(part)
                 else:
                     if si == self.editing_index:
-                        new_parts.append(("slot", {"type": slot["type"], "value": slot["value"]}))
+                        new_parts.append(("slot", {"type": slot["type"], "value": slot["value"], "default": slot.get("default", slot["value"])}))
                     else:
-                        new_parts.append(("slot", {"type": part[1]["type"], "value": part[1]["value"]}))
+                        new_parts.append(("slot", {"type": part[1]["type"], "value": part[1]["value"], "default": part[1].get("default", part[1]["value"])}))
                     si += 1
             self.template_parts = new_parts
             self.slots = [part[1] for part in self.template_parts if part[0] == "slot"]
@@ -521,6 +575,31 @@ class Block:
                 return True
         return False
 
+    def get_block_at(self, pos):
+        # 1. CHECK SLOTS FIRST (Foreground)
+        # We must check if the click hit a nested O-block before checking the parent
+        for slot in self.slots:
+            if isinstance(slot["value"], Block):
+                found = slot["value"].get_block_at(pos)
+                if found: return found
+
+        # 2. Check nested blocks (Inside C-mouth)
+        if self.nested_child:
+            found = self.nested_child.get_block_at(pos)
+            if found: return found
+            
+        # 3. Check vertical children (Below)
+        if self.child:
+            found = self.child.get_block_at(pos)
+            if found: return found
+
+        # 4. CHECK THIS BLOCK LAST (Background)
+        # Only return the parent if none of the children were clicked
+        if self.get_rect().collidepoint(pos):
+            return self
+            
+        return None
+
     def _stamp_at(self, display, pos):
         # Use original visual layout but inline content width computed from compute_layout
         x, y = pos
@@ -573,6 +652,9 @@ class Block:
                 s_w, s_h = self.font.font.size(part[1])
                 cursor_x += s_w
             else:
+                slot_data = part[1]
+                val = slot_data["value"]
+                
                 # displayed value uses editing_text if active for this slot
                 if self.editing_index == slot_index_counter:
                     display_text = self.editing_text
@@ -582,7 +664,6 @@ class Block:
                     show_caret = ((now // 500) % 2) == 0
                     should_render_slot = True
                 else:
-                    val = part[1]["value"]
                     if isinstance(val, Block):
                         # When slot contains a Block, don't render the slot rectangle
                         # Just render the nested block and move on
@@ -592,7 +673,8 @@ class Block:
                         display_text = ""
                         show_caret = False
                     else:
-                        display_text = str(val) if val is not None else ""
+                        # FIX: Handle empty text gracefully with default fallback
+                        display_text = str(val) if (val is not None and val != "") else str(slot_data.get("default", ""))
                         should_render_slot = True
                         show_caret = False
 
@@ -631,18 +713,13 @@ class Block:
             
             # --- FIX: STRICT RECURSION ---
             # We ONLY call the immediate nested child. 
-            # We do NOT loop through curr = curr.child here.
             if self.nested_child:
                 # The nested child will draw itself AND its own children automatically.
-                # We simply tell it where the "mouth" starts.
                 nested_y = y + content_h + 5
                 self.nested_child.stamp_at(display, (x + 13, nested_y))
 
         # 3. CHAIN RENDERING (The block BELOW)
-        # This is the standard "Next" block in the sequence.
         if self.child:
-            # We don't need stamp_at here because self.child.pos is 
-            # already kept perfectly in sync by the update() function.
             self.child.stamp(display)
 
     def stamp(self, display):
@@ -654,11 +731,15 @@ class Block:
 
     def stamp_at(self, display, pos):
         # render at explicit pos (toolbox rendering)
-        # toolbox templates are not editable; ensure editing_index cleared for templates
         prev_edit = (self.editing_index, self.editing_text)
         self.editing_index = None
         self.editing_text = ""
-        self._stamp_at(display, pos)
+        
+        if self.btype == "o":
+            self.draw_oval_block(display, pos[0], pos[1])
+        else:
+            self._stamp_at(display, pos)
+            
         self.editing_index, self.editing_text = prev_edit
 
     def compile_expr(self):
