@@ -73,9 +73,13 @@ class FloppyCompiler:
         data = []
         curr = start_block
         while curr:
+            if curr.btype == "o":  # If it's an O-block in the main chain, skip it
+                curr = curr.child
+                continue
+                
             block_data = {
                 "cmd": curr.text.split('[')[0].strip(),
-                "args": curr.get_slot_values(),
+                "args": curr.get_slot_values(), # This handles the nested O-blocks correctly
                 "type": curr.btype,
                 "substack": []
             }

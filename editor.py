@@ -66,6 +66,14 @@ def main():
     toolbox_templates = [
         {"name": "Render [string:sprite name] at [num:0][num:0]", "col": (100, 100, 255), "desc": "Render a sprite from you´re assets into the screen at a coordinate: x, y."},
         {"name": "Fill screen [number:255][number:255][number:255] rgb", "col": (100, 100, 255), "desc": "Fill the screen with a rgb value color."},
+        {"name": "[number:0]+[number:0]", "col": (152, 209, 140), "btype": "o", "desc": "Add 2 numbers together."},
+        {"name": "[number:0]-[number:0]", "col": (152, 209, 140), "btype": "o", "desc": "subtract 2 numbers."},
+        {"name": "[number:0]*[number:0]", "col": (152, 209, 140), "btype": "o", "desc": "Multiply 2 numbers together."},
+        {"name": "[number:0]/[number:0]", "col": (152, 209, 140), "btype": "o", "desc": "Divide 2 numbers."},
+        {"name": "int[number:0.0]", "col": (135, 206, 235), "btype": "o", "desc": "Convert a float to a integer."},
+        {"name": "float[number:0]", "col": (135, 206, 235), "btype": "o", "desc": "Convert a integer to a float."},
+        {"name": "string[]", "col": (135, 206, 235), "btype": "o", "desc": "Convert a variable into a string."},
+        {"name": "bool[]", "col": (135, 206, 235), "btype": "o", "desc": "Convert a variable into a boolean."},
         {"name": "Repeat [number:10]", "col": (0,255,0), "btype": "l", "desc": "Repeat the contained blocks 10 times. Useful for simple loops."},
         {"name": "Variable [string:variable] = []", "col": (255, 128, 0), "desc": "Sets a value to a given variable or creates a new one entirelly."},
         {"name": "Change [string:variable] by [num:1]", "col": (255, 128, 0), "desc": "Changes the value of a float or integer type: variable by a input number."},
@@ -76,7 +84,7 @@ def main():
         {"name": "Stop all", "col": (80, 80, 80), "desc": "Stop all currently playing sounds and reset audio state."},
         {"name": "Show Console", "col": (204, 0, 0), "desc": "Display the debug console overlay."},
         {"name": "Hide Console", "col": (204, 0, 0), "desc": "Hide the debug console overlay."},
-        {"name": "Print [string:Hello!]", "col": (204, 0, 0), "desc": "Print a message to the in-game console."}
+        {"name": "Print [string:Hello!]", "col": (204, 0, 0), "desc": "Print a message to the in-game console."},
     ]
 
     toolbox_blocks = []

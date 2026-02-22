@@ -422,12 +422,20 @@ class Block:
                     other.slots[idx]["value"] = self
                     self.parent = other
                     return True 
+            
+            # CRITICAL SAFETY: If an O-block misses a slot, it exits here.
+            # It will NEVER run the vertical snapping code below.
             return False
 
         # 3. VERTICAL & MOUTH SNAPPING
         SNAP_DIST = 25
         for other in targets:
-            # FIX: Use the individual block's body height, not the total chain height
+            
+            # ---> THE BOUNCER: Nothing is allowed to snap vertically to an O-block!
+            if other.btype == "o":
+                continue
+
+            # FIX: Use the individual block's body height
             block_body_h = other.get_block_body_height()
             
             # --- LANDMARK A: THE MOUTH (L-Blocks) ---
@@ -469,25 +477,7 @@ class Block:
                 self.pos = list(floor_pos)
                 return True
 
-            # --- LANDMARK C: THE TOP (Snap target chain under current block's chain) ---
-            top_pos = (other.pos[0], other.pos[1])
-            tail = self.get_last_in_chain()
-            tail_body_h = tail.get_block_body_height()
-            tail_bottom_pos = (tail.pos[0], tail.pos[1] + tail_body_h - 1)
-            
-            if math.hypot(tail_bottom_pos[0] - top_pos[0], tail_bottom_pos[1] - top_pos[1]) < SNAP_DIST:
-                # If 'other' was already attached to something else, clear it
-                if other.parent:
-                    if other.parent.child == other: other.parent.child = None
-                    if hasattr(other.parent, 'nested_child') and other.parent.nested_child == other: 
-                        other.parent.nested_child = None
-                
-                tail.child = other
-                other.parent = tail
-                
-                # 'other' is now part of our chain; remove it from the root blocks list if present
-                if other in blocks: blocks.remove(other)
-                return True
+            # (LANDMARK C HAS BEEN PURPOSEFULLY DELETED TO PREVENT DISAPPEARING BUGS)
                 
         return False
 
@@ -740,9 +730,20 @@ class Block:
         self.editing_index, self.editing_text = prev_edit
 
     def compile_expr(self):
+        opcode = self.text.split("[")[0].strip()
+        
+        # If the block starts with a slot, find the symbol inside
+        if opcode == "":
+            if "+" in self.text: opcode = "+"
+            elif "-" in self.text: opcode = "-"
+            elif "*" in self.text: opcode = "*"
+            elif "/" in self.text: opcode = "/"
+            else:
+                opcode = "Get"
+            
         return {
             "type": "expr",
-            "opcode": self.text.split("[")[0].strip(),
+            "opcode": opcode,
             "params": self.get_slot_values()
         }
     
