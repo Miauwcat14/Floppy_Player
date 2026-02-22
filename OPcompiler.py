@@ -30,9 +30,6 @@ class FloppyCompiler:
         self.ctx['running'] = True
 
     def _assemble(self, data_list):
-        """
-        The Assembler: Maps JSON names to compiled C++ functions via Nuitka.
-        """
         tasks = []
         for item in data_list:
             cmd = item["cmd"]
@@ -41,15 +38,29 @@ class FloppyCompiler:
             if cmd in OPCODES:
                 logic_func = OPCODES[cmd]
                 
-                if item.get("type") == "l": # Handle Nesting
+                if item.get("type") == "l": # Handle Nesting (L-Blocks)
                     substack = self._assemble(item["substack"])
-                    # This loop becomes a high-speed C loop after Nuitka compilation
-                    def loop_task(s=substack, c=args[0]):
-                        for _ in range(int(c)):
-                            for step in s: step()
-                    tasks.append(loop_task)
+                    
+                    if cmd == "If":
+                        def if_task(s=substack, a=args):
+                            from block_code import checkifvar
+                            # This is the secret sauce: 
+                            # checkifvar runs the 'key_pressed' function for us!
+                            condition_result = checkifvar(a, 0, self.ctx)
+                            
+                            if condition_result: # If it's 1 or True
+                                for step in s: step()
+                        tasks.append(if_task)
+                    else:
+                        # Existing Repeat/Loop logic
+                        def loop_task(s=substack, a=args):
+                            from block_code import checkifvar
+                            count = int(checkifvar(a, 0, self.ctx))
+                            for _ in range(count):
+                                for step in s: step()
+                        tasks.append(loop_task)
                 else:
-                    # Standard block closure
+                    # Standard block closure (Move, Print, etc.)
                     def task(f=logic_func, a=args):
                         f(self.ctx, a)
                     tasks.append(task)

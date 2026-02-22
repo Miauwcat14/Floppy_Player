@@ -91,9 +91,38 @@ def op_repeat(ctx, args, substack):
             task()
 
 def op_if(ctx, args, substack):
-    if checkifvar(args, 0, ctx):
+    # The condition is the first argument (index 0)
+    condition = checkifvar(args, 0, ctx)
+    
+    # In Python, True is 1 and False is 0 in your engine usually
+    if condition:
+        # Run every task inside the if-mouth
         for task in substack:
             task()
+
+def op_key_pressed(ctx, args):
+    # 1. Resolve the key name (in case it's a variable)
+    from block_code import checkifvar
+    key_name = str(checkifvar(args, 0, ctx)).lower()
+    
+    # 2. Update Pygame's internal state
+    pygame.event.pump() 
+    
+    try:
+        # 3. Get the ID and check the state
+        key_id = pygame.key.key_code(key_name)
+        keys = pygame.key.get_pressed()
+        
+        # We return 1 for True, 0 for False (standard for your engine)
+        return 1 if keys[key_id] else 0
+    except ValueError:
+        return 0
+
+def op_rect_touching(ctx, args):
+    # Rect touching [x1][y1][w1][h1] with [x2][y2][w2][h2]
+    r1 = pygame.Rect(checkifvar(args,0,ctx), checkifvar(args,1,ctx), checkifvar(args,2,ctx), checkifvar(args,3,ctx))
+    r2 = pygame.Rect(checkifvar(args,4,ctx), checkifvar(args,5,ctx), checkifvar(args,6,ctx), checkifvar(args,7,ctx))
+    return r1.colliderect(r2)
 
 def op_render(ctx, args):
     sprite_name = str(checkifvar(args, 0, ctx))
@@ -147,13 +176,16 @@ OPCODES = {
     # Commands
     "Render": op_render,
     "Fill": op_fill,
-    "Variable": set_var,   # Matching your "Variable [string] = []" template
-    "Change": change_var,   # Matching your "Change [string] by [num]" template
+    "Variable": set_var,   
+    "Change": change_var,   
     "Wait": op_wait,
-    "Print": print_to_console,
     "Stop all": op_stop_all,
+    
+    # System
+    "Print": print_to_console,
     "Show Console": show_console,
     "Hide Console": hide_console,
+    "delta": lambda ctx, args: ctx.get('dt', 0.016), 
     
     # Reporters (O-Blocks)
     "+": op_add,
@@ -164,7 +196,11 @@ OPCODES = {
     "float": op_float,
     "string": op_string,
     "bool": op_bool,
-    "Get": op_get, # To retrieve variable values
+    "Get": op_get, 
+    
+    # Detection
+    "key_pressed": op_key_pressed,
+    "rect_touching": op_rect_touching,
     
     # Control (L-Blocks)
     "Repeat": op_repeat,
