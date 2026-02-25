@@ -730,17 +730,26 @@ class Block:
         self.editing_index, self.editing_text = prev_edit
 
     def compile_expr(self):
-        opcode = self.text.split("[")[0].strip()
-        
-        # If the block starts with a slot, find the symbol inside
+        raw_text = self.text.split("[")[0]
+        opcode = raw_text.replace("(", "").replace(")", "").strip()
         if opcode == "":
             if "+" in self.text: opcode = "+"
             elif "-" in self.text: opcode = "-"
             elif "*" in self.text: opcode = "*"
             elif "/" in self.text: opcode = "/"
+            elif "%" in self.text: opcode = "%"
+            elif "=" in self.text: opcode = "="
+            elif ">" in self.text: opcode = ">"
+            elif "<" in self.text: opcode = "<"
+            elif ">=" in self.text: opcode = ">="
+            elif "<=" in self.text: opcode = "<="
+            elif "power" in self.text: opcode = "power"
+            elif "not" in self.text: opcode = "not"
+            elif "and" in self.text: opcode = "and"
+            elif "or" in self.text: opcode = "or"
             else:
                 opcode = "Get"
-            
+                
         return {
             "type": "expr",
             "opcode": opcode,

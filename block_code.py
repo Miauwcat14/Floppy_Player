@@ -5,16 +5,14 @@ def checkifvar(args, num, ctx):
     if num >= len(args): return 0
     val = args[num]
     
-    # 1. Logic for Nested O-Blocks
     if isinstance(val, dict) and val.get("type") == "expr":
-        opcode_name = val.get("opcode")
+        # THE FIX: strip() and replace() to clean up stray characters
+        opcode_name = val.get("opcode").strip("() ") 
         params = val.get("params", [])
+        
         if opcode_name in OPCODES:
-            # Recursion: The O-block solves itself and returns a number/string
             return OPCODES[opcode_name](ctx, params)
         return 0
-
-    # 2. Handle Variable Strings ("var:my_variable")
     st = str(val)
     if st.startswith("var:"):
         var_name = st[4:]
@@ -60,6 +58,49 @@ def op_div(ctx, args):
         return float(checkifvar(args, 0, ctx)) / d if d != 0 else 0
     except (ValueError, TypeError):
         return 0 # Default to 0 if the input isn't a number
+
+def op_eq(ctx, args):
+    try:
+        return float(checkifvar(args, 0, ctx)) == float(checkifvar(args, 1, ctx))
+    except (ValueError, TypeError):
+        return False
+def op_gt(ctx, args):
+    try:
+        return float(checkifvar(args, 0, ctx)) > float(checkifvar(args, 1, ctx))
+    except (ValueError, TypeError):
+        return False
+def op_lt(ctx, args):
+    try:
+        return float(checkifvar(args, 0, ctx)) < float(checkifvar(args, 1, ctx))
+    except (ValueError, TypeError):
+        return False
+def op_gte(ctx, args):
+    try:
+        return float(checkifvar(args, 0, ctx)) >= float(checkifvar(args, 1, ctx))
+    except (ValueError, TypeError):
+        return False
+def op_lte(ctx, args):
+    try:
+        return float(checkifvar(args, 0, ctx)) <= float(checkifvar(args, 1, ctx))
+    except (ValueError, TypeError):
+        return False
+
+def op_not(ctx, args):
+    try:
+        return not bool(checkifvar(args, 0, ctx))
+    except (ValueError, TypeError):
+        return False
+def op_and(ctx, args):
+    try:
+        return bool(checkifvar(args, 0, ctx)) and bool(checkifvar(args, 1, ctx))
+    except (ValueError, TypeError):
+        return False
+def op_or(ctx, args):
+    try:
+        return bool(checkifvar(args, 0, ctx)) or bool(checkifvar(args, 1, ctx))
+    except (ValueError, TypeError):
+        return False
+
 def op_get(ctx, args):
     # args[0] is the variable name inside the Get block's slot
     var_name = str(args[0])
@@ -91,12 +132,12 @@ def op_repeat(ctx, args, substack):
             task()
 
 def op_if(ctx, args, substack):
-    # The condition is the first argument (index 0)
+    # checkifvar will resolve the Get blocks or Comparisons
     condition = checkifvar(args, 0, ctx)
     
-    # In Python, True is 1 and False is 0 in your engine usually
-    if condition:
-        # Run every task inside the if-mouth
+    # We force it to a boolean. 
+    # In your engine: 0, "0", "False", or empty strings become False.
+    if bool(condition) and str(condition).lower() not in ["false", "0", "0.0"]:
         for task in substack:
             task()
 
@@ -138,10 +179,17 @@ def op_render(ctx, args):
         ctx['screen'].blit(target_surf, (x, y))
 
 def op_fill(ctx, args):
-    # Fill screen [r][g][b]
-    # args: [255, 255, 255]
-    color = (int(checkifvar(args, 0, ctx)), int(checkifvar(args, 1, ctx)), int(checkifvar(args, 2, ctx)))
-    ctx['screen'].fill(color)
+    # Get values and force them to be 0-255
+    r = int(checkifvar(args, 0, ctx))
+    g = int(checkifvar(args, 1, ctx))
+    b = int(checkifvar(args, 2, ctx))
+    
+    # CLAMPING: If r is 600, it becomes 255. If r is -50, it becomes 0.
+    r = max(0, min(255, r))
+    g = max(0, min(255, g))
+    b = max(0, min(255, b))
+    
+    ctx['rgb'] = (r, g, b)
 
 def set_var(ctx, args):
     var_name = str(args[0])
@@ -153,9 +201,9 @@ def change_var(ctx, args):
     ctx["vars"][str(args[0])] = int(ctx["vars"][str(args[0])]) + int(checkifvar(args, 1, ctx))
 
 def op_wait(ctx, args):
-    # Wait [seconds]
-    # args: [1.0]
-    pygame.time.wait(int(float(checkifvar(args, 0, ctx)) * 1000))
+    seconds = float(checkifvar(args, 0, ctx))
+    # We set a timestamp in the future
+    ctx['sleep_until'] = pygame.time.get_ticks() + int(seconds * 1000)
 
 def op_stop_all(ctx, args):
     # Stop all sounds
@@ -171,11 +219,87 @@ def print_to_console(ctx, args):
     # args[0] is the text from the block
     ctx['console'].log(checkifvar(args, 0, ctx))
 
+def op_clear_console(ctx, args):
+    ctx['console'].logs = [] # Wipe the list
+
+#Lists
+def op_create_list(ctx, args):
+    list_name = str(args[0])
+    ctx["vars"][list_name] = [] # Create a real Python list in memory
+
+def op_add_to_list(ctx, args):
+    # args[0] is the value, args[1] is the list name
+    val = checkifvar(args, 0, ctx)
+    list_name = str(args[1])
+    
+    # Safety: Create list if the user forgot the 'Create List' block
+    if list_name not in ctx["vars"]:
+        ctx["vars"][list_name] = []
+        
+    if isinstance(ctx["vars"][list_name], list):
+        ctx["vars"][list_name].append(val)
+
+def op_list_length(ctx, args):
+    list_name = str(args[0])
+    lst = ctx["vars"].get(list_name, [])
+    return len(lst) if isinstance(lst, list) else 0
+
+def op_get_item(ctx, args):
+    list_name = str(checkifvar(args, 0, ctx))
+    index = int(checkifvar(args, 1, ctx))
+    lst = ctx["vars"].get(list_name, [])
+    if 0 <= index < len(lst):
+        return lst[index]
+    return 0
+
+def op_mod(ctx, args):
+    a = float(checkifvar(args, 0, ctx))
+    b = float(checkifvar(args, 1, ctx))
+    return a % b
+
+def op_round(ctx, args):
+    a = float(checkifvar(args, 0, ctx))
+    return round(a)
+
+def op_sqrt(ctx, args):
+    a = float(checkifvar(args, 0, ctx))
+    return math.sqrt(a)
+
+def op_power(ctx, args):
+    base = checkifvar(args, 0, ctx)
+    exponent = checkifvar(args, 1, ctx)
+    return base ** exponent 
+
+def op_sin(ctx, args):
+    a = float(checkifvar(args, 0, ctx))
+    return math.sin(a)
+
+def op_cos(ctx, args):
+    a = float(checkifvar(args, 0, ctx))
+    return math.cos(a)
+
+def op_tan(ctx, args):
+    a = float(checkifvar(args, 0, ctx))
+    return math.tan(a)
+
+def op_atan(ctx, args):
+    a = float(checkifvar(args, 0, ctx))
+    return math.atan(a)
+
+def op_abs(ctx, args):
+    a = float(checkifvar(args, 0, ctx))
+    return abs(a)
+
+def op_random(ctx, args):
+    a = float(checkifvar(args, 0, ctx))
+    b = float(checkifvar(args, 1, ctx))
+    return random.randint(a, b)
+
 # --- MAPPING ---
 OPCODES = {
     # Commands
     "Render": op_render,
-    "Fill": op_fill,
+    "Fill screen": op_fill,
     "Variable": set_var,   
     "Change": change_var,   
     "Wait": op_wait,
@@ -185,24 +309,58 @@ OPCODES = {
     "Print": print_to_console,
     "Show Console": show_console,
     "Hide Console": hide_console,
-    "delta": lambda ctx, args: ctx.get('dt', 0.016), 
+    "Clear Console": op_clear_console,
+    "delta": lambda ctx, args: ctx.get('dt', 0.016),
+    "time": lambda ctx, args: pygame.time.get_ticks() / 1000.0,
+    "True": lambda ctx, args: True,
+    "False": lambda ctx, args: False,
+    "None": lambda ctx, args: None,
+    "mouse x": lambda ctx, args: ctx.get('mouse').hitbox.x if ctx.get('mouse') else 0,
+    "mouse y": lambda ctx, args: ctx.get('mouse').hitbox.y if ctx.get('mouse') else 0,
+    "screen x": lambda ctx, args: ctx.get('screen', 0).get_width(),
+    "screen y": lambda ctx, args: ctx.get('screen', 0).get_height(),
     
     # Reporters (O-Blocks)
     "+": op_add,
     "-": op_sub,
     "*": op_mul,
     "/": op_div,
+    "%": op_mod,
+    "=": op_eq,
+    ">": op_gt,
+    "<": op_lt,
+    ">=": op_gte,
+    "<=": op_lte,
     "int": op_int,
     "float": op_float,
     "string": op_string,
     "bool": op_bool,
-    "Get": op_get, 
+    "Get": op_get,
+    "not": op_not,
+    "and": op_and,
+    "or": op_or,
+    "round": op_round,
+    "abs": op_abs,
+    "sqrt": op_sqrt,
+    "power": op_power,
+    "sin": op_sin,
+    "cos": op_cos,
+    "tan": op_tan,
+    "atan": op_atan,
+    "random": op_random,
     
     # Detection
     "key_pressed": op_key_pressed,
     "rect_touching": op_rect_touching,
     
     # Control (L-Blocks)
+    "Create List": op_create_list,
+    "Add": op_add_to_list,         # Changed from "Add to"
+    "Item": op_get_item,
+    "Length of": op_list_length,   # Changed from "Length"
+    "For Each": None,
     "Repeat": op_repeat,
-    "If": op_if
+    "If": op_if,
+    "While": None,
+    "Forever while": None,
 }

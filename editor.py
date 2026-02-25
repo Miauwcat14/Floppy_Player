@@ -1,29 +1,32 @@
 import pygame
 import sys
 import math
+import os
 from button import *
 from font import *
-from mouse import *
+from mouse import *  
 from reader import *
 from block import *
 from fexplorer import *
 from assets_st import *
 from OPcompiler import *
+from save_load import *
 
 def main():
     pygame.init()
     # Display
     screen_size = pygame.display.Info()
     side = min(screen_size.current_w, screen_size.current_h)
-    window_size = (side, side)
-    screen = pygame.Surface((256, 256))
-    window_limits = (256, 256)
+    window_size = (screen_size.current_w, side)
+    screen = pygame.Surface((455, 256))
+    window_limits = (455, 256)
     display = pygame.display.set_mode((screen_size.current_w, screen_size.current_h) ,pygame.DOUBLEBUF | pygame.FULLSCREEN)
 
     # Program variables
     clock = pygame.time.Clock()
     FPS_CAP = 60
-    run = True
+    dt = 0
+    run = True 
     is_menu = True
     is_error = False
     is_explorer = False
@@ -70,23 +73,57 @@ def main():
         {"name": "[number:0]-[number:0]", "col": (152, 209, 140), "btype": "o", "desc": "subtract 2 numbers."},
         {"name": "[number:0]*[number:0]", "col": (152, 209, 140), "btype": "o", "desc": "Multiply 2 numbers together."},
         {"name": "[number:0]/[number:0]", "col": (152, 209, 140), "btype": "o", "desc": "Divide 2 numbers."},
+        {"name": "[number:0]%[number:0]", "col": (152, 209, 140), "btype": "o", "desc": "Returns the remainder of a division."},
+        {"name": "abs[number:0]", "col": (152, 209, 140), "btype": "o", "desc": "Returns the absolute value of a number."},
+        {"name": "round[number:0]", "col": (152, 209, 140), "btype": "o", "desc": "Rounds a number to the nearest integer."},
+        {"name": "sin[number:0]", "col": (152, 209, 140), "btype": "o", "desc": "Returns the sine of a number."},
+        {"name": "cos[number:0]", "col": (152, 209, 140), "btype": "o", "desc": "Returns the cosine of a number."},
+        {"name": "tan[number:0]", "col": (152, 209, 140), "btype": "o", "desc": "Returns the tangent of a number."},
+        {"name": "atan[number:0]", "col": (152, 209, 140), "btype": "o", "desc": "Returns the arc tangent of a number."},
+        {"name": "sqrt[number:0]", "col": (152, 209, 140), "btype": "o", "desc": "Returns the square root of a number."},
+        {"name": "random[number:0] to [number:10]", "col": (152, 209, 140), "btype": "o", "desc": "Returns a random number between the two numbers."},
+        {"name": "[number:0]power[number:0]", "col": (152, 209, 140), "btype": "o", "desc": "Returns the first number raised to the power of the second number."},
+        {"name": "[number:0]=[number:0]", "col": (152, 209, 140), "btype": "o", "desc": "Check if 2 numbers are equal."},
+        {"name": "[number:0]>[number:0]", "col": (152, 209, 140), "btype": "o", "desc": "Check if the first number is greater than the second."},
+        {"name": "[number:0]<[number:0]", "col": (152, 209, 140), "btype": "o", "desc": "Check if the first number is less than the second."},
+        {"name": "[number:0]>=[number:0]", "col": (152, 209, 140), "btype": "o", "desc": "Check if the first number is greater than or equal to the second."},
+        {"name": "[number:0]<=[number:0]", "col": (152, 209, 140), "btype": "o", "desc": "Check if the first number is less than or equal to the second."},
+        {"name": "[number:0]and[number:0]", "col": (152, 209, 140), "btype": "o", "desc": "Returns True if both numbers are True."},
+        {"name": "[number:0]or[number:0]", "col": (152, 209, 140), "btype": "o", "desc": "Returns True if at least one of the numbers is True."},
+        {"name": "not[number:0]", "col": (152, 209, 140), "btype": "o", "desc": "Returns the opposite of a boolean value."},
         {"name": "int[number:0.0]", "col": (135, 206, 235), "btype": "o", "desc": "Convert a float to a integer."},
         {"name": "float[number:0]", "col": (135, 206, 235), "btype": "o", "desc": "Convert a integer to a float."},
         {"name": "string[]", "col": (135, 206, 235), "btype": "o", "desc": "Convert a variable into a string."},
         {"name": "bool[]", "col": (135, 206, 235), "btype": "o", "desc": "Convert a variable into a boolean."},
         {"name": "If [bool:0]", "col": (255, 171, 25), "btype": "l", "desc": "Execute the contained blocks only if the condition is true."},
         {"name": "Repeat [number:10]", "col": (255, 171, 25), "btype": "l", "desc": "Repeat the contained blocks 10 times. Useful for simple loops."},
+        {"name": "While [number:1]", "col": (255, 171, 25), "btype": "l", "desc": "Repeats the contained blocks while the condition is true."},
+        {"name": "Forever while [number:1]", "col": (255, 171, 25), "btype": "l", "desc": "Repeats the contained blocks while the condition is true fps dependent so no screen freezers hit."},
         {"name": "key_pressed[string:space]", "col": (135, 206, 235), "btype": "o", "desc": "Returns True if the specified key is currently pressed."},
-        {"name": "dt", "col": (135, 206, 235), "btype": "o", "desc": "Returns the time in seconds since the last frame (delta time)."},
+        {"name": "delta", "col": (135, 206, 235), "btype": "o", "desc": "Returns the time in seconds since the last frame (delta time)."},
+        {"name": "time", "col": (135, 206, 235), "btype": "o", "desc": "Returns the time in seconds since the game started."},
+        {"name": "True", "col": (135, 206, 235), "btype": "o", "desc": "Returns True."},
+        {"name": "False", "col": (135, 206, 235), "btype": "o", "desc": "Returns False."},
+        {"name": "None", "col": (135, 206, 235), "btype": "o", "desc": "Returns None."},
+        {"name": "mouse x", "col": (135, 206, 235), "btype": "o", "desc": "Returns the x position of the mouse."},
+        {"name": "mouse y", "col": (135, 206, 235), "btype": "o", "desc": "Returns the y position of the mouse."},
+        {"name": "screen x", "col": (135, 206, 235), "btype": "o", "desc": "Returns the x position of the screen."},
+        {"name": "screen y", "col": (135, 206, 235), "btype": "o", "desc": "Returns the y position of the screen."},
         {"name": "Variable [string:variable] = []", "col": (255, 128, 0), "desc": "Sets a value to a given variable or creates a new one entirelly."},
         {"name": "Change [string:variable] by [num:1]", "col": (255, 128, 0), "desc": "Changes the value of a float or integer type: variable by a input number."},
         {"name": "Get [string:variable]", "col": (255, 128, 0), "btype": "o", "desc": "Returns the value of a variable."},
+        {"name": "Create List [string:bullets]", "col": (150, 0, 255), "desc": "Initializes a new empty list with the given name."},
+        {"name": "Add [num:0] to [string:bullets]", "col": (150, 0, 255), "desc": "Appends a value to the end of a specified list."},
+        {"name": "Item [num:0] of [string:bullets]", "col": (150, 0, 255), "btype": "o", "desc": "Returns the value at a specific index in a list."},
+        {"name": "Length of [string:bullets]", "col": (150, 0, 255), "btype": "o", "desc": "Returns how many items are currently in the list."},
+        {"name": "For Each [string:i] in [string:bullets]", "col": (150, 0, 255), "btype": "l", "desc": "Loops through every item in a list, setting the first variable to the current item."},
         {"name": "Wait [number:1] sec", "col": (200, 100, 0), "desc": "Pause execution for one second. Timing is approximate and frame-rate dependent."},
         {"name": "Set volume [number:100]", "col": (0, 150, 150), "desc": "Set the master volume level for sound playback (0 - 100)."},
         {"name": "Play note [string:C4]", "col": (150, 0, 150), "desc": "Play a musical note for a short duration. Specify pitch and length in the block parameters."},
         {"name": "Stop all", "col": (80, 80, 80), "desc": "Stop all currently playing sounds and reset audio state."},
         {"name": "Show Console", "col": (204, 0, 0), "desc": "Display the debug console overlay."},
         {"name": "Hide Console", "col": (204, 0, 0), "desc": "Hide the debug console overlay."},
+        {"name": "Clear Console", "col": (204, 0, 0), "desc": "Clear all messages from the console."},
         {"name": "Print [string:Hello!]", "col": (204, 0, 0), "desc": "Print a message to the in-game console."},
     ]
 
@@ -170,7 +207,7 @@ def main():
             self.font = font_instance
             self.messages = []
             self.active = False
-            self.rect = pygame.Rect(0, 160, 256, 96)
+            self.rect = pygame.Rect(0, 160, 456, 96)
 
         def log(self, text, color=(255, 255, 255)):
             self.messages.append((str(text), color))
@@ -189,15 +226,15 @@ def main():
 
     console = Console(font)
     engine.ctx['console'] = console
+    engine.ctx['mouse'] = mouse
 
     #####################
     # -=Main Loop=-     #
     #####################
 
     while run:
+        last_time = pygame.time.get_ticks()
         events = pygame.event.get()
-        screen.fill((255, 255, 255))
-        screen.blit(ed_bg, (0, 0))
         ox = (screen_size.current_w - window_size[0]) // 2
         mouse_pos = pygame.mouse.get_pos()
         lim_x, lim_y = window_limits
@@ -210,17 +247,27 @@ def main():
         for event in events:
             if event.type == pygame.QUIT:
                 run = False
-            if event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_ESCAPE:
-                    if engine.ctx['running']:
-                        engine.ctx['running'] = False
-                        print("Engine Stopped. Returning to Editor...")
 
         if engine.ctx["running"]:
+            screen.fill(engine.ctx["rgb"])
             mouse.set_state(0)
-            engine.run_frame()
-            console.draw(screen)
+            
+            # Run the engine (this now respects the non-blocking wait)
+            engine.run_once()
+            
+            # Always draw the console if it's active
+            console.draw(screen) 
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    engine.ctx['running'] = False
+                    engine.ctx['finished'] = False
+                    engine.ctx['pc'] = 0           # <--- IMPORTANT: RESET TO START
+                    engine.ctx['sleep_until'] = 0  # <--- IMPORTANT: RESET TIMER
+                    engine.ctx['console'].messages = [] # Use .messages to clear
+                    print("Engine Stopped. Returning to Editor...")
         else:
+            screen.fill((255, 255, 255))
+            screen.blit(ed_bg, (0, 0))
             if is_explorer:
                 status = explorer.update(events, mouse)
                 explorer.draw(screen, mouse)
@@ -393,6 +440,19 @@ def main():
                             scroll_offset = int((rel_y / (handle_area_h - scrollbar_handle_rect.h)) * max_scroll)
                         else:
                             scroll_offset = 0
+                
+                if event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_s and pygame.key.get_mods() & pygame.KMOD_CTRL:
+                        if not os.path.exists("saves"):
+                            os.makedirs("saves")
+                        save_project(all_blocks, "saves/my_script.floppy")
+                        
+                    if event.key == pygame.K_l and pygame.key.get_mods() & pygame.KMOD_CTRL:
+                        # Clear current workspace
+                        all_blocks.clear()
+                        # Load new blocks
+                        loaded = load_project("saves/my_script.floppy", self)
+                        all_blocks.extend(loaded)
 
             mouse.set_state(0)
             
@@ -429,8 +489,8 @@ def main():
                                 
                         if root:
                             engine.compile(root)
+                            console.messages = []
                             engine.ctx['running'] = True
-                            engine.ctx['pc'] = 0
                             print("Game Started!")
 
                     if not is_explorer:
@@ -537,6 +597,10 @@ def main():
         sc = pygame.transform.scale(screen, (window_size[0], window_size[1]))
         display.blit(sc, (ox, 0))
         pygame.display.flip()
+        current_time = pygame.time.get_ticks()
+        dt = (current_time - last_time) / 1000.0 
+        last_time = current_time
+        engine.ctx["dt"] = dt
         clock.tick(FPS_CAP)
         pygame.display.set_caption(f"Floppy Player - FPS: {int(clock.get_fps())}")
 
