@@ -1,63 +1,70 @@
 import pygame
 import random
+import math
 
 def checkifvar(args, num, ctx):
-    if num >= len(args): return 0
-    val = args[num]
-    
-    if isinstance(val, dict) and val.get("type") == "expr":
-        # THE FIX: strip() and replace() to clean up stray characters
-        opcode_name = val.get("opcode").strip("() ") 
-        params = val.get("params", [])
-        
-        if opcode_name in OPCODES:
-            return OPCODES[opcode_name](ctx, params)
-        return 0
-    st = str(val)
-    if st.startswith("var:"):
-        var_name = st[4:]
-        return ctx["vars"].get(var_name, 0)
-    
-    # 3. Handle Type Strings ("type:my_variable")
-    if st.startswith("type:"):
-        var_name = st[5:]
-        return type(ctx["vars"].get(var_name, 0))
+    profiler = ctx.get("profiler")
+    start = profiler.start_checkifvar() if profiler else None
 
-    # 4. Handle Literals & Casting
     try:
-        if "." in st: return float(st)
-        return int(st)
-    except:
-        return val
+        if num >= len(args):
+            return 0
 
-# --- REPORTER OPCODES (O-Blocks) ---
-# These return values to be used by other blocks.
+        val = args[num]
+
+        if isinstance(val, dict) and val.get("type") == "expr":
+            opcode_name = val.get("opcode").strip("() ")
+            params = val.get("params", [])
+
+            if opcode_name in OPCODES:
+                return OPCODES[opcode_name](ctx, params)
+            return 0
+
+        st = str(val)
+
+        if st.startswith("var:"):
+            var_name = st[4:]
+            return ctx["vars"].get(var_name, 0)
+
+        if st.startswith("type:"):
+            var_name = st[5:]
+            return type(ctx["vars"].get(var_name, 0))
+
+        try:
+            if "." in st:
+                return float(st)
+            return int(st)
+        except:
+            return val
+
+    finally:
+        if profiler:
+            profiler.end_checkifvar(start)
 
 def math_dispatcher(ctx, args):
     return float(checkifvar(args, 0, ctx)) + float(checkifvar(args, 1, ctx))
 
-# Add the specific math functions
 def op_add(ctx, args):
     try:
         return float(checkifvar(args, 0, ctx)) + float(checkifvar(args, 1, ctx))
     except (ValueError, TypeError):
-        return 0 # Default to 0 if the input isn't a number
+        return 0
 def op_sub(ctx, args):
     try:
         return float(checkifvar(args, 0, ctx)) - float(checkifvar(args, 1, ctx))
     except (ValueError, TypeError):
-        return 0 # Default to 0 if the input isn't a number
+        return 0
 def op_mul(ctx, args):
     try:
         return float(checkifvar(args, 0, ctx)) * float(checkifvar(args, 1, ctx))
     except (ValueError, TypeError):
-        return 0 # Default to 0 if the input isn't a number
+        return 0
 def op_div(ctx, args):
     try:
         d = float(checkifvar(args, 1, ctx))
         return float(checkifvar(args, 0, ctx)) / d if d != 0 else 0
     except (ValueError, TypeError):
-        return 0 # Default to 0 if the input isn't a number
+        return 0
 
 def op_eq(ctx, args):
     try:
@@ -102,7 +109,6 @@ def op_or(ctx, args):
         return False
 
 def op_get(ctx, args):
-    # args[0] is the variable name inside the Get block's slot
     var_name = str(args[0])
     return ctx["vars"].get(var_name, 0)
 def op_int(ctx, args):
@@ -119,11 +125,9 @@ def op_string(ctx, args):
     return str(checkifvar(args, 0, ctx))
 def op_bool(ctx, args):
     val = checkifvar(args, 0, ctx)
-    # Returns True for 1, "True", or non-empty strings
     if str(val).lower() in ["false", "0", "0.0", "none"]: return False
     return bool(val)
-# --- CONTROL OPCODES (L-Blocks) ---
-# These receive 'substack', which is a list of compiled lambdas.
+
 
 def op_repeat(ctx, args, substack):
     times = int(float(checkifvar(args, 0, ctx)))
@@ -363,4 +367,12 @@ OPCODES = {
     "If": op_if,
     "While": None,
     "Forever while": None,
+}
+
+SCHEDULER_DEPENDENT = {
+    "Wait",
+    "Render",
+    "Fill screen",
+    "key pressed",
+    "Forever while",
 }

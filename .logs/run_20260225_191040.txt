@@ -1,0 +1,42 @@
+=== FLOPPY ENGINE FULL PROFILING REPORT ===
+Generated: 20260225_191040
+
+=== LOOP PROFILING ===
+Loop: While@2459254539840
+Iterations: 1000
+Total: 4585.400 탎
+Avg/Iter: 4.585400 탎
+Iter/sec: 218,083.48
+--------------------------------------------------
+Loop: While@2459254534080
+Iterations: 10000
+Total: 47506.400 탎
+Avg/Iter: 4.750640 탎
+Iter/sec: 210,497.95
+--------------------------------------------------
+Loop: While@2459254539776
+Iterations: 1000000
+Total: 4706077.400 탎
+Avg/Iter: 4.706077 탎
+Iter/sec: 212,491.19
+--------------------------------------------------
+
+=== OPCODE PROFILING ===
+Change
+  Calls: 1011000
+  Total: 1112922.200 탎
+  Avg: 1100.81 ns
+----------------------------------------
+Variable
+  Calls: 6
+  Total: 95.700 탎
+  Avg: 15950.00 ns
+----------------------------------------
+
+=== checkifvar PROFILING ===
+Calls: 4044015
+Total: 3680436.500 탎
+
+=== SUBSTACK PROFILING ===
+Calls: 1011000
+Total: 1752592.500 탎

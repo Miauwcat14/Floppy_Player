@@ -1,7 +1,8 @@
 import json
 import os
 import pygame
-from block_code import OPCODES
+from block_code import *
+from profiler import EngineProfiler
 
 class FloppyCompiler:
     def __init__(self, screen, assets):
@@ -18,26 +19,27 @@ class FloppyCompiler:
             'rgb': (255, 255, 255)
         }
         self.executable_list = []
+        self.profiler = EngineProfiler()
+        self.ctx['profiler'] = self.profiler
 
     def run_once(self):
-        """Executes blocks safely, catching any crashes."""
         if self.ctx.get('finished', False): return
 
         try:
-            # Check for non-blocking wait
             if pygame.time.get_ticks() < self.ctx.get('sleep_until', 0):
                 return 
 
             pc = self.ctx.get('pc', 0)
+            if pc >= len(self.executable_list):
+                self.ctx['finished'] = True
+                self._safe_log("--- Script Finished ---")
+                self._safe_log("Press ESC to exit...")
+                self.profiler.export()
+                return
             if pc < len(self.executable_list):
                 task = self.executable_list[pc]
                 self.ctx['pc'] = pc + 1
                 task()
-            else:
-                self.ctx['finished'] = True
-                # Use .log() if it's a class, or .append() if it's a list
-                self._safe_log("--- Script Finished ---")
-                self._safe_log("Press ESC to exit...")
         
         except Exception as e:
             error_msg = f"CRASH: {str(e)}"
@@ -78,11 +80,9 @@ class FloppyCompiler:
                     if cmd == "If":
                         def if_task(s=substack, a=args):
                             from block_code import checkifvar
-                            # Evaluate the condition
                             condition = bool(checkifvar(a, 0, self.ctx))
                             
                             if condition:
-                                # Run everything inside the 'If' block immediately
                                 for task_func in s:
                                     task_func()
                                     
@@ -91,15 +91,13 @@ class FloppyCompiler:
                     elif cmd == "For Each":
                         def foreach_task(s=substack, a=args):
                             from block_code import checkifvar
-                            # Slots: For Each [i] in [bullets]
-                            # a[0] is "i", a[1] is "bullets"
                             var_name = str(a[0])
                             list_name = str(a[1])
                             
                             target_list = self.ctx["vars"].get(list_name, [])
                             if isinstance(target_list, list):
                                 for val in target_list:
-                                    self.ctx["vars"][var_name] = val # Update 'i'
+                                    self.ctx["vars"][var_name] = val
                                     for step in s: step()
                         tasks.append(foreach_task)
                         
@@ -107,55 +105,62 @@ class FloppyCompiler:
                         def loop_task(s=substack, a=args):
                             from block_code import checkifvar
                             count = int(checkifvar(a, 0, self.ctx))
-                            
-                            # We don't use a 'for' loop here! 
-                            # We inject the substack blocks back into the main list 
-                            # so the 'pc' can walk through them one by one.
-                            
-                            # This is advanced: we are effectively 'unrolling' the loop
                             new_tasks = []
                             for _ in range(count):
                                 new_tasks.extend(s)
-                                
-                            # Insert these tasks right after the current block
                             current_pc = self.ctx.get('pc', 0)
                             for i, t in enumerate(new_tasks):
                                 self.executable_list.insert(current_pc + i, t)
-                                
                         tasks.append(loop_task)
                     elif cmd == "While":
-                        def while_task(s=substack, a=args):
-                            from block_code import checkifvar
-                            
-                            #NO LIMITE! If this is infinite, the game freezes. Skill issue! :P
-                            while bool(checkifvar(a, 0, self.ctx)):
-                                for task_func in s:
-                                    task_func()
-                                    
-                        tasks.append(while_task)
+                        requires_safe = self._substack_requires_scheduler(item["substack"])
+
+                        if not requires_safe:
+                            def fast_while(s=substack, a=args):
+                                from block_code import checkifvar
+
+                                loop_name = f"While@{id(s)}"
+                                self.profiler.start_loop(loop_name)
+
+                                while bool(checkifvar(a, 0, self.ctx)):
+                                    self.profiler.tick_loop()
+
+                                    sub_start = self.profiler.start_substack()
+                                    for task_func in s:
+                                        task_func()
+                                    self.profiler.end_substack(sub_start)
+
+                                self.profiler.end_loop()
+                            tasks.append(fast_while)
+
+                        else:
+                            start_pc = len(tasks)
+
+                            def safe_while(a=args, s=substack, loop_start=start_pc):
+                                from block_code import checkifvar
+
+                                if bool(checkifvar(a, 0, self.ctx)):
+                                    for task_func in s:
+                                        task_func()
+                                    self.ctx['pc'] -= 1
+
+                            tasks.append(safe_while)
                     elif cmd == "Forever while":
-                        start_pc = len(tasks) # Remember where the loop starts
-                        
-                        def while_task(a=args, s=substack, loop_start=start_pc):
+
+                        def while_task(a=args, s=substack):
                             from block_code import checkifvar
                             condition = bool(checkifvar(a, 0, self.ctx))
-                            
                             if condition:
-                                # Instead of a loop, we just 'inject' the substack 
-                                # into the execution queue for the next frames.
-                                # OR better: run them and move the PC back.
                                 for task_func in s:
                                     task_func()
-                                
-                                # This is the magic: set the Program Counter back to this block
-                                # so it runs again on the NEXT frame call!
-                                self.ctx['pc'] -= 1 
-                                
+                                self.ctx['pc'] -= 1
+
                         tasks.append(while_task)
                 else:
-                    # Standard block closure (Move, Print, etc.)
-                    def task(f=logic_func, a=args):
+                    def task(f=logic_func, a=args, name=cmd):
+                        start = self.profiler.start_opcode(name)
                         f(self.ctx, a)
+                        self.profiler.end_opcode(name, start)
                     tasks.append(task)
         return tasks
 
@@ -166,32 +171,30 @@ class FloppyCompiler:
                     task()
             except Exception as e:
                 self.ctx['running'] = False
-                # This uses your new console to show the error in-game!
                 if 'console' in self.ctx:
                     self.ctx['console'].log(f"SYS-ERROR: {str(e)}", (255, 50, 50))
                     self.ctx['console'].active = True
     
     def compile(self, start_block):
         self.executable_list = [] 
-        self.ctx['pc'] = 0              # Reset to block 0
-        self.ctx['finished'] = False    # Un-finish the engine
-        self.ctx['sleep_until'] = 0     # Clear any pending waits
+        self.ctx['pc'] = 0
+        self.ctx['finished'] = False
+        self.ctx['sleep_until'] = 0
         self.ctx['vars'] = {}
 
         data = []
         curr = start_block
         while curr:
-            if curr.btype == "o":  # If it's an O-block in the main chain, skip it
+            if curr.btype == "o":
                 curr = curr.child
                 continue
                 
             block_data = {
                 "cmd": curr.text.split('[')[0].strip(),
-                "args": curr.get_slot_values(), # This handles the nested O-blocks correctly
+                "args": curr.get_slot_values(),
                 "type": curr.btype,
                 "substack": []
             }
-            # If it's a loop, recursively get the inside blocks
             if curr.btype == "l" and curr.nested_child:
                 block_data["substack"] = self._get_substack_data(curr.nested_child)
             
@@ -213,3 +216,12 @@ class FloppyCompiler:
             })
             curr = curr.child
         return nodes
+    
+    def _substack_requires_scheduler(self, data_list):
+        for item in data_list:
+            if item["cmd"] in SCHEDULER_DEPENDENT:
+                return True
+            if item.get("substack"):
+                if self._substack_requires_scheduler(item["substack"]):
+                    return True
+        return False

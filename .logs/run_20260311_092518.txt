@@ -1,0 +1,19 @@
+=== FLOPPY ENGINE FULL PROFILING REPORT ===
+Generated: 20260311_092518
+
+=== LOOP PROFILING ===
+
+=== OPCODE PROFILING ===
+Fill screen
+  Calls: 1
+  Total: 66.100 µs
+  Avg: 66100.00 ns
+----------------------------------------
+
+=== checkifvar PROFILING ===
+Calls: 3
+Total: 26.300 µs
+
+=== SUBSTACK PROFILING ===
+Calls: 0
+Total: 0.000 µs
